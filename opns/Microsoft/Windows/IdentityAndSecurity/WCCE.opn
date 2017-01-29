@@ -1,0 +1,816 @@
+/*++
+
+Copyright (c) 2013  Microsoft Corporation
+
+Module Name:
+
+    protocol.idl
+
+Abstract:
+
+    IDL for the Windows Client Certificate Enrollment protocol.
+
+Environment:
+
+    
+
+Revision History:
+
+--*/
+
+protocol WCCE with
+Documentation
+{
+    ProtocolName = "Windows Client Certificate Enrollment Protocol",
+    ProtocolType = "rpc",
+    ShortName = "WCCE",
+    DocumentName = "MS-WCCE",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+    [
+        new Reference {Name = "MS-WCCE", Version = "35.0", ProgramName = ProgramName.WSPP}
+    ],
+    RevisionSummary = 
+    [
+        new Revision {Class = RevisionClass.Major, Version = "1.0.0", Date = "01/31/2013"}
+    ]
+};
+
+using Technologies.IDL;
+using DTYP;
+using ERREF;
+using MSRPCE;
+using DCOM;
+using Utility;
+using X509;
+using ASN1;
+
+string MODULE_NAME = "WCCE";
+
+endpoint WcceService over MSRPCE.Server provides ICertRequestD
+                                        provides ICertRequestD2
+{
+    observe this accepts m:ICertRequestD.Request
+    {
+        CustomMarshalRequest(m);
+    }
+    
+    observe this accepts m:ICertRequestD2.Request
+    {
+        CustomMarshalRequest(m);
+    }
+    
+    observe this accepts m:ICertRequestD.GetCACert where (m.fchain != null)
+    {
+        CustomMarshalGetCACert(m);
+    }
+
+    observe this accepts m:ICertRequestD2.GetCACert where (m.fchain != null)
+    {
+        CustomMarshalGetCACert(m);
+    }
+    
+    observe this accepts m:ICertRequestD2.Request2
+    {
+        CustomMarshalRequest2(m);
+    }
+    
+    observe this accepts m:ICertRequestD2.GetCAProperty where (m.PropID != null)
+    {
+        CustomMarshalGetCAProperty(m);
+    }
+    
+    observe this accepts m:ICertRequestD2.GetCAPropertyInfo
+    {
+        CustomMarshalGetCAPropertyInfo(m);
+    }
+}
+
+//
+// Interface Attributes
+//
+contract ICertRequestD provides IUnknown
+{
+    ///
+    /// The Request method initiates the certificate issuance process
+    ///    
+    accepts operation Request
+    {
+        in ORPCTHIS ORPCthis with IDL{IndirectionLevel = 1};
+        out ORPCTHAT ORPCthat with IDL{IndirectionLevel = 1};
+        in DWORD dwFlags;
+        in string pwszAuthority
+               with IDL{Range = new RangePattern {Low = 1, High = 1536},
+                        PointerType = PointerKind.UniquePtr,
+                        BaseStringType = TypeOf<wchar_t>(),
+                        IndirectionLevel = 1};        
+        in out DWORD pdwRequestId
+                   with IDL{PointerType = PointerKind.RefPtr, IndirectionLevel = 1};
+        out DWORD pdwDisposition with IDL{IndirectionLevel = 1};
+        in string pwszAttributes
+               with IDL{Range = new RangePattern {Low = 1, High = 1536},
+                        PointerType = PointerKind.UniquePtr,
+                        BaseStringType = TypeOf<wchar_t>(),
+                        IndirectionLevel = 1};
+        in CERTTRANSBLOB pctbRequest
+               with IDL{PointerType = PointerKind.RefPtr, IndirectionLevel = 1};
+        out CERTTRANSBLOB pctbCertChain
+                with IDL{PointerType = PointerKind.RefPtr, IndirectionLevel = 1};
+        out CERTTRANSBLOB pctbEncodedCert
+                with IDL{PointerType = PointerKind.RefPtr, IndirectionLevel = 1};
+        out CERTTRANSBLOB pctbDispositionMessage
+                with IDL{PointerType = PointerKind.RefPtr, IndirectionLevel = 1};
+        result HRESULT ReturnValue;
+        
+        override string ToString()
+        {
+            return
+                "Request, ReturnValue: " + WcceHResultValuesToText(ReturnValue as uint) +
+                ", RequestId: " + pdwRequestId.ToString() +
+				", Request a certificate renewal from Authority: " + pwszAuthority.ToString();
+        }
+    }
+    with IDL{Opnum = 3};
+    
+    ///
+    /// The GetCACert method returns property values on the CA.
+    /// The main use of this method is to enable clients to diagnose issues and the state of the server.
+    ///    
+    accepts operation GetCACert
+    {
+        in ORPCTHIS ORPCthis with IDL{IndirectionLevel = 1};
+        out ORPCTHAT ORPCthat with IDL{IndirectionLevel = 1};
+        in DWORD fchain where ValidationCheckEnumValue((value is GetCACert_fchain1) || ((value & 0xFFFF0000) is GetCACert_fchain2), this, true, ReferenceType.Message,
+			MODULE_NAME, "fchain", "GetCACert", "the valid fchain values", value);
+        in string pwszAuthority
+               with IDL{Range = new RangePattern {Low = 1, High = 1536},
+                        PointerType = PointerKind.UniquePtr,
+                        BaseStringType = TypeOf<wchar_t>(),
+                        IndirectionLevel = 1};
+        out CERTTRANSBLOB pctbOut
+                with IDL{PointerType = PointerKind.RefPtr, IndirectionLevel = 1};
+        result HRESULT ReturnValue;
+        
+        override string ToString()
+        {
+            return
+                "GetCACert, ReturnValue: " + WcceHResultValuesToText(ReturnValue as uint) +
+				", Retrieve property values for the CA functionality Fchain: " + fchainToText(fchain) +
+				" from Authority: " + pwszAuthority.ToString();
+        }
+    }
+    with IDL{Opnum = 4};
+    
+    ///
+    /// The Ping method performs a request response test (ping) to the CA.
+    ///        
+    accepts operation Ping
+    {
+        in ORPCTHIS ORPCthis with IDL{IndirectionLevel = 1};
+        out ORPCTHAT ORPCthat with IDL{IndirectionLevel = 1};
+        in string pwszAuthority
+               with IDL{Range = new RangePattern {Low = 1, High = 1536},
+                        PointerType = PointerKind.UniquePtr,
+                        BaseStringType = TypeOf<wchar_t>(),
+                        IndirectionLevel = 1};
+        result HRESULT ReturnValue;
+        
+        override string ToString()
+        {
+            return
+                "Ping, ReturnValue: " + WcceHResultValuesToText(ReturnValue as uint) +
+				", Request a response test from Authority: " + pwszAuthority.ToString();
+        }
+    }
+    with IDL{Opnum = 5};
+}
+with IDL{Uuid = {d99e6e70-fc88-11d0-b498-00a0c90312f3},
+         Object = true,
+         Version = "0.0",
+         Pointer_default = PointerKind.UniquePtr,
+         Helpstring = "ICertRequest DCOM Interface"};         
+
+contract ICertRequestD2 provides ICertRequestD
+{
+    ///
+    /// The Request2 method requests a certificate from the CA.
+    /// It is similar to the Request method, but it has an additional parameter, pwszSerialNumber.
+    ///    
+    accepts operation Request2
+    {
+        in ORPCTHIS ORPCthis with IDL{IndirectionLevel = 1};
+        out ORPCTHAT ORPCthat with IDL{IndirectionLevel = 1};
+        in string pwszAuthority
+               with IDL{Range = new RangePattern {Low = 1, High = 1536},
+                        PointerType = PointerKind.UniquePtr,
+                        BaseStringType = TypeOf<wchar_t>(),
+                        IndirectionLevel = 1};
+        in DWORD dwFlags;
+        in string pwszSerialNumber
+               with IDL{Range = new RangePattern {Low = 1, High = 64},
+                        PointerType = PointerKind.UniquePtr,
+                        BaseStringType = TypeOf<wchar_t>(),
+                        IndirectionLevel = 1};
+        in out DWORD pdwRequestId
+                   with IDL{PointerType = PointerKind.RefPtr, IndirectionLevel = 1};
+        out DWORD pdwDisposition with IDL{IndirectionLevel = 1};
+        in string pwszAttributes
+               with IDL{Range = new RangePattern {Low = 1, High = 1536},
+                        PointerType = PointerKind.UniquePtr,
+                        BaseStringType = TypeOf<wchar_t>(),
+                        IndirectionLevel = 1};
+        in CERTTRANSBLOB pctbRequest
+               with IDL{PointerType = PointerKind.RefPtr, IndirectionLevel = 1};
+        out CERTTRANSBLOB pctbFullResponse
+                with IDL{PointerType = PointerKind.RefPtr, IndirectionLevel = 1};
+        out CERTTRANSBLOB pctbEncodedCert
+                with IDL{PointerType = PointerKind.RefPtr, IndirectionLevel = 1};
+        out CERTTRANSBLOB pctbDispositionMessage
+                with IDL{PointerType = PointerKind.RefPtr, IndirectionLevel = 1};
+        result HRESULT ReturnValue;
+        
+        override string ToString()
+        {
+            return
+                "Request2, ReturnValue: " + WcceHResultValuesToText(ReturnValue as uint) +
+				", RequestId: " + pdwRequestId.ToString() + 
+				", SerialNumber: " + pwszSerialNumber.ToString() +
+				", Request a certificate renewal from Authority: " + pwszAuthority.ToString();
+        }
+    }
+    with IDL{Opnum = 6};
+    
+    ///
+    /// The GetCAProperty method retrieves a property value from the CA.
+    ///    
+    accepts operation GetCAProperty
+    {
+        in ORPCTHIS ORPCthis with IDL{IndirectionLevel = 1};
+        out ORPCTHAT ORPCthat with IDL{IndirectionLevel = 1};
+        in string pwszAuthority
+               with IDL{Range = new RangePattern {Low = 1, High = 1536},
+                        PointerType = PointerKind.UniquePtr,
+                        BaseStringType = TypeOf<wchar_t>(),
+                        IndirectionLevel = 1};
+        in IDLLong PropID where ValidationCheckEnumValue(value is GetCAPropertyID, this, true, ReferenceType.Message, MODULE_NAME, "PropID", "GetCAProperty", "the valid PropID values", value);
+        in IDLLong PropIndex;
+        in IDLLong PropType where ValidationCheckEnumValue(value is GetCAPropertyType, this, true, ReferenceType.Message, MODULE_NAME, "PropType", "GetCAProperty", "the valid PropType values", value);
+        out CERTTRANSBLOB pctbPropertyValue
+                with IDL{PointerType = PointerKind.RefPtr, IndirectionLevel = 1};
+        result HRESULT ReturnValue;
+        
+        override string ToString()
+        {
+            return
+                "GetCAProperty, ReturnValue: " + WcceHResultValuesToText(ReturnValue as uint) +
+				", Retrieve property values for the CA functionality PropID: " + EnumToString(PropID, "WCCE.GetCAPropertyID") + 
+				", PropIndex: " + PropIndex.ToString() +
+				", PropType: " + EnumToString(PropType, "WCCE.GetCAPropertyType") +
+                " from Authority: " + pwszAuthority.ToString();
+        }
+    }
+    with IDL{Opnum = 7};
+    
+    ///
+    /// The GetCAPropertyInfo method retrieves a set of property structures from the CA.
+    ///    
+    accepts operation GetCAPropertyInfo
+    {
+        in ORPCTHIS ORPCthis with IDL{IndirectionLevel = 1};
+        out ORPCTHAT ORPCthat with IDL{IndirectionLevel = 1};
+        in string pwszAuthority
+               with IDL{Range = new RangePattern {Low = 1, High = 1536},
+                        PointerType = PointerKind.UniquePtr,
+                        BaseStringType = TypeOf<wchar_t>(),
+                        IndirectionLevel = 1};
+        out IDLLong pcProperty with IDL{IndirectionLevel = 1};
+        out CERTTRANSBLOB pctbPropInfo
+                with IDL{PointerType = PointerKind.RefPtr, IndirectionLevel = 1};
+        result HRESULT ReturnValue;
+        
+        override string ToString()
+        {
+            return
+                "GetCAPropertyInfo, ReturnValue: " + WcceHResultValuesToText(ReturnValue as uint) + 
+				", Retrieve property values for the CA functionality from Authority: " + pwszAuthority.ToString();
+        }
+    }
+    with IDL{Opnum = 8};
+    
+    ///
+    /// The Ping2 method pings the CA.
+    ///    
+    accepts operation Ping2
+    {
+        in ORPCTHIS ORPCthis with IDL{IndirectionLevel = 1};
+        out ORPCTHAT ORPCthat with IDL{IndirectionLevel = 1};
+        in string pwszAuthority
+               with IDL{Range = new RangePattern {Low = 1, High = 1536},
+                        PointerType = PointerKind.UniquePtr,
+                        BaseStringType = TypeOf<wchar_t>(),
+                        IndirectionLevel = 1};
+        result HRESULT ReturnValue; //with DisplayInfo{ToText = WcceHResultValuesToText};
+        
+        override string ToString()
+        {
+            return
+                "Ping2, ReturnValue: " + WcceHResultValuesToText(ReturnValue as uint) +
+				", Request a response test from Authority: " + pwszAuthority.ToString();
+        }
+    }
+    with IDL{Opnum = 9};
+}
+with IDL{Uuid = {5422fd3a-d4b8-4cef-a12e-e87d4ca22e90},
+         Object = true,
+         Version = "0.0",
+         Pointer_default = PointerKind.UniquePtr,
+         Helpstring = "ICertRequest2 DCOM Interface"};
+
+// TDI, full IDL not consistent with definition in section 2.2.2.2
+type CATRANSPROP
+{
+    IDLLong lPropID;
+    //IDLLong lPropFlags;
+    BYTE propType;
+    BYTE Reserved;
+    USHORT propFlags;
+    //DWORD obwszDisplayName;
+    ULONG obwszDisplayName;
+}
+         
+type CAINFO
+{
+    DWORD cbSize;
+    IDLLong CAType;
+    DWORD cCASignatureCerts;
+    DWORD cCAExchangeCerts;
+    DWORD cExitAlgorithms;
+    IDLLong lPropIDMax;
+    IDLLong lRoleSeparationEnabled;
+    DWORD cKRACertUsedCount;
+    DWORD cKRACertCount;
+    DWORD fAdvancedServer;
+}
+         
+type CERTTRANSBLOB
+{
+    ULONG cb;
+    (array<BYTE> | any) pb with IDL{Size_is = [cb],
+                     PointerType = PointerKind.UniquePtr,
+                     IndirectionLevel = 1};
+}
+
+typedef BYTE = byte ;
+
+type dwFlagsPackedData
+{
+    byte Padding1 where ValidationCheckReservedZero(value == 0, null, true, ReferenceType.Type, MODULE_NAME, "Padding1", "dwFlags", value)
+        with Documentation
+        {Description = "This field MUST be set to 0 and ignored upon receipt."};
+    SERVER_REQUEST_OPT_FLAGS Flags;
+    byte RequestType where ValidationCheckValueInRange(value >=0x00 && value <= 0x04, null, true, ReferenceType.Type, MODULE_NAME, "RequestType", "dwFlags", "0x00", "0x04", value)
+		with Documentation
+		{Description = "RequestType MUST define the possible formats of the certificate request submitted in the pctbRequest parameter (format types are specified in [RFC2797])."};
+    byte Padding2 where ValidationCheckReservedZero(value == 0, null, true, ReferenceType.Type, MODULE_NAME, "Padding2", "dwFlags", value)
+        with Documentation
+        {Description = "This field MUST be set to 0 and ignored upon receipt."};
+} with IDL{DoNotGenerate = true};
+
+pattern SERVER_REQUEST_OPT_FLAGS = flags byte
+{
+	X = 0x08, // "If this bit is set, the response MUST include the CRLs for all the certificates returned in the pctbCertChain and pctbEncodedCert parameters."
+	Y = 0x04, // "If this bit is set, then the response MUST be a CMC full PKI response. If it is not set, the response MUST be a CMS. This bit supported by the ICertRequestD2::Request2 method only."
+	Z = 0x20  // "If this bit is set, this is a renewal request on behalf of another user. The processing rules for this type of request are specified in section 3.2.2.6.2.1.2.4."
+} with IDL{DoNotGenerate = true};
+
+const map<uint, string> WcceHResultMap =
+{
+    0x80070002 -> "ERROR_FILE_NOT_FOUND", 
+    0x80070003 -> "ERROR_PATH_NOT_FOUND",
+    0x80070006 -> "ERROR_INVALID_HANDLE",
+    0x80074003 -> "ERROR_INVALID_POINTER",
+    0x80074004 -> "CERTSRV_E_PROPERTY_EMPTY",
+    0x80070057 -> "E_INVALIDARG",
+    0x80090003 -> "NTE_BAD_KEY",
+    0x8009000F -> "ERROR_OBJECT_EXISTS",
+    0x80091004 -> "CRYPT_E_INVALID_MSG_TYPE",
+    0x8009200E -> "CRYPT_E_NO_SIGNER",
+    0x8009310B -> "CRYPT_E_ASN1_BADTAG",
+    0x80093100 -> "CRYPT_E_ASN1_ERROR",
+} with Documentation{Ignore = true};
+
+pattern GetCACert_fchain1 = enum DWORD
+{
+    GETCERT_CASIGCERT       = 0x00000000,
+    GETCERT_CAXCHGCERT      = 0X00000001,
+    GETCERT_CURRENTCRL      = 0X6363726C,
+    GETCERT_FILEVERSION     = 0x66696C65,
+    GETCERT_CAINFO          = 0x696E666F,
+    GETCERT_CANAME          = 0x6E616D65,
+    GETCERT_PARENTCONFIG    = 0x70617265,
+    GETCERT_POLICYVERSION   = 0x706F6C69,
+    GETCERT_PRODUCTVERSION  = 0x70726F64,
+    GETCERT_SANITIZEDCANAME = 0x73616E69,
+    GETCERT_SHAREDFOLDER    = 0x73686172,
+    GETCERT_CATYPE          = 0x74797065,
+} with IDL{DoNotGenerate = true};
+
+pattern GetCACert_fchain2 = enum DWORD
+{
+    GETCERT_CRLBYINDEX         = 0x636C0000,
+    GETCERT_CACERTBYINDEX      = 0x63740000,
+    GETCERT_EXITVERSIONBYINDEX = 0x65780000,
+    GETCERT_CRLSTATEBYINDEX    = 0x736C0000,
+    GETCERT_CACERTSTATEBYINDEX = 0x73740000,
+} with IDL{DoNotGenerate = true};
+
+pattern GetCAPropertyID = enum IDLLong
+{
+    CR_PROP_FILEVERSION              = 0x00000001,
+    CR_PROP_PRODUCTVERSION           = 0x00000002,
+    CR_PROP_EXITCOUNT                = 0x00000003,
+    CR_PROP_EXITDESCRIPTION          = 0x00000004,
+    CR_PROP_POLICYDESCRIPTION        = 0x00000005,
+    CR_PROP_CANAME                   = 0x00000006,
+    CR_PROP_SANITIZEDCANAME          = 0x00000007,
+    CR_PROP_SHAREDFOLDER             = 0x00000008,
+    CR_PROP_PARENTCA                 = 0x00000009,
+    CR_PROP_CATYPE                   = 0x0000000A,
+    CR_PROP_CASIGCERTCOUNT           = 0x0000000B,
+    CR_PROP_CASIGCERT                = 0x0000000C,
+    CR_PROP_CASIGCERTCHAIN           = 0x0000000D,
+    CR_PROP_CAXCHGCERTCOUNT          = 0x0000000E,
+    CR_PROP_CAXCHGCERT               = 0x0000000F,
+    CR_PROP_CAXCHGCERTCHAIN          = 0x00000010,
+    CR_PROP_BASECRL                  = 0x00000011,
+    CR_PROP_DELTACRL                 = 0x00000012,
+    CR_PROP_CACERTSTATE              = 0x00000013,
+    CR_PROP_CRLSTATE                 = 0x00000014,
+    CR_PROP_CAPROPIDMAX              = 0x00000015,
+    CR_PROP_DNSNAME                  = 0x00000016,
+    CR_PROP_ROLESEPARATIONENABLED    = 0x00000017,
+    CR_PROP_KRACERTUSEDCOUNT         = 0x00000018,
+    CR_PROP_KRACERTCOUNT             = 0x00000019,
+    CR_PROP_KRACERT                  = 0x0000001A,
+    CR_PROP_KRACERTSTATE             = 0x0000001B,
+    CR_PROP_ADVANCEDSERVER           = 0x0000001C,
+    CR_PROP_TEMPLATES                = 0x0000001D,
+    CR_PROP_BASECRLPUBLISHSTATUS     = 0x0000001E,
+    CR_PROP_DELTACRLPUBLISHSTATUS    = 0x0000001F,
+    CR_PROP_CASIGCERTCRLCHAIN        = 0x00000020,
+    CR_PROP_CAXCHGCERTCRLCHAIN       = 0x00000021,
+    CR_PROP_CACERTSTATUSCODE         = 0x00000022,
+    CR_PROP_CAFORWARDCROSSCERT       = 0x00000023,
+    CR_PROP_CABACKWARDCROSSCERT      = 0x00000024,
+    CR_PROP_CAFORWARDCROSSCERTSTATE  = 0x00000025,
+    CR_PROP_CABACKWARDCROSSCERTSTATE = 0x00000026,
+    CR_PROP_CACERTVERSION            = 0x00000027,
+    CR_PROP_SANITIZEDCASHORTNAME     = 0x00000028,
+    CR_PROP_CERTCDPURLS              = 0x00000029,
+    CR_PROP_CERTAIAURLS              = 0x0000002A,
+    CR_PROP_CERTAIAOCSPRLS           = 0x0000002B,
+    CR_PROP_LOCALENAME               = 0x0000002C,
+    CR_PROP_SUBJECTTEMPLATE_OIDS     = 0x0000002D,
+} with IDL{DoNotGenerate = true};
+
+pattern GetCAPropertyType = enum IDLLong
+{
+    PROPTYPE_LONG   = 0x00000001,
+    PROPTYPE_BINARY = 0x00000003,
+    PROPTYPE_STRING = 0x00000004,
+} with IDL{DoNotGenerate = true};
+
+//
+// Utilities and Functions
+//
+
+void DecodeCertTransBlob<T>(CERTTRANSBLOB blob, string typeName)
+{
+    if ((blob.cb > 0) && (blob.pb is array<byte>))
+    {
+        binary payload = (blob.pb as array<byte>) as binary;
+        if (payload.Count > 0)
+        {
+            var val = BinaryDecoder<T>(payload);
+            if (!(val is nothing))
+            {
+                blob.pb = val;
+            }
+            else
+            {
+                ThrowDecodingException("WCCE", typeName);
+            }
+        }
+    }
+}
+
+void DecodeCertTransBlobAsn1<T>(CERTTRANSBLOB blob, string typeName)
+{
+    if ((blob.cb > 0) && (blob.pb is array<byte>))
+    {
+        binary payload = (blob.pb as array<byte>) as binary;
+        if (payload.Count > 0)
+        {
+            var val = Asn1BerDecoder<T>(payload);
+            if (!(val is nothing))
+            {
+                blob.pb = val;
+            }
+            else
+            {
+                ThrowDecodingException("WCCE", typeName);
+            }
+        }
+    }
+}
+
+void DecodeCertTransBlobNDR<T>(CERTTRANSBLOB blob, string typeName)
+{
+    if ((blob.cb > 0) && (blob.pb is array<byte>))
+    {
+        binary payload = (blob.pb as array<byte>) as binary;
+        if (payload.Count > 0)
+        {
+            var val = NdrDecoder<T>(payload);
+            if (!(val is nothing))
+            {
+                blob.pb = val;
+            }
+            else
+            {
+                ThrowDecodingException("WCCE", typeName);
+            }
+        }
+    }
+}
+
+void CustomMarshalRequest(ICertRequestD.Request m)
+{
+	// Custom Marshaling for Request Message
+    if (m.dwFlags != null)
+    {
+	// Future Reference: Decode dwFlags as dwFlagsPackedData
+    }
+    
+    if (m.pctbRequest != null)
+    {
+        // Future Reference: Decode pctbRequest according to RequestType determined by dwFlags
+    }
+    
+    if (m.pctbCertChain != null)
+    {
+        // Future Reference: Decode pctbCertChain according to Flags determined by dwFlags
+    }
+	
+	// Custom Marshaling for Response Message
+    if (m.pctbEncodedCert != null)
+    {
+        DecodeCertTransBlobAsn1<Certificate>(m.pctbEncodedCert, "X509 Certificate");
+    }
+    
+    if (m.pctbDispositionMessage != null)
+    {
+        DecodeCertTransBlob<string>(m.pctbDispositionMessage, "Unicode String");
+    }
+}
+
+void CustomMarshalGetCACert(ICertRequestD.GetCACert m)
+{
+	// Custom Marshaling for Response Message
+    if (m.pctbOut != null)
+    {
+        if (m.fchain is GetCACert_fchain1)
+		{
+		    switch (m.fchain)
+		    {
+				case GetCACert_fchain1.GETCERT_FILEVERSION =>
+					DecodeCertTransBlob<string>(m.pctbOut, "Unicode String");
+				case GetCACert_fchain1.GETCERT_CANAME =>
+					DecodeCertTransBlob<string>(m.pctbOut, "Unicode String");
+				case GetCACert_fchain1.GETCERT_PARENTCONFIG =>
+					DecodeCertTransBlob<string>(m.pctbOut, "Unicode String");
+				case GetCACert_fchain1.GETCERT_POLICYVERSION =>
+					DecodeCertTransBlob<string>(m.pctbOut, "Unicode String");
+				case GetCACert_fchain1.GETCERT_PRODUCTVERSION =>
+					DecodeCertTransBlob<string>(m.pctbOut, "Unicode String");
+				case GetCACert_fchain1.GETCERT_SANITIZEDCANAME =>
+					DecodeCertTransBlob<string>(m.pctbOut, "Unicode String");
+				case GetCACert_fchain1.GETCERT_SHAREDFOLDER =>
+					DecodeCertTransBlob<string>(m.pctbOut, "Unicode String");
+				case GetCACert_fchain1.GETCERT_CAINFO =>
+					DecodeCertTransBlobNDR<CAINFO>(m.pctbOut, "NDR Encoding");
+				case GetCACert_fchain1.GETCERT_CURRENTCRL =>
+					DecodeCertTransBlobAsn1<CertificateList>(m.pctbOut, "X509 Certificate List");
+				case GetCACert_fchain1.GETCERT_CASIGCERT =>
+					DecodeCertTransBlobAsn1<Certificate>(m.pctbOut, "X509 Certificate");
+				case GetCACert_fchain1.GETCERT_CAXCHGCERT =>
+					DecodeCertTransBlobAsn1<Certificate>(m.pctbOut, "X509 Certificate");
+				case GetCACert_fchain1.GETCERT_CATYPE =>
+					DecodeCertTransBlob<uint>(m.pctbOut, "Unsigned Integer");
+				default =>
+					// Unknown fchain, decode as array<byte>
+			}
+		}
+		else if ((m.fchain & 0xFFFF0000) is GetCACert_fchain2)
+		{
+			switch (m.fchain & 0xFFFF0000)
+			{
+				case GetCACert_fchain2.GETCERT_EXITVERSIONBYINDEX =>
+					DecodeCertTransBlob<string>(m.pctbOut, "Unicode String");
+				case GetCACert_fchain2.GETCERT_CRLBYINDEX =>
+					DecodeCertTransBlobAsn1<CertificateList>(m.pctbOut, "X509 Certificate List");
+				case GetCACert_fchain2.GETCERT_CACERTBYINDEX =>
+					DecodeCertTransBlobAsn1<Certificate>(m.pctbOut, "X509 Certificate");
+				case GetCACert_fchain2.GETCERT_CRLSTATEBYINDEX =>
+					// Decode as array<byte>
+				case GetCACert_fchain2.GETCERT_CACERTSTATEBYINDEX =>
+					// Decode as array<byte>
+				default =>
+					// Unknown fchain, decode as array<byte>
+			}
+		}
+	}
+}
+
+void CustomMarshalRequest2(ICertRequestD2.Request2 m)
+{
+	// Custom Marshaling for Request Message
+    if (m.dwFlags != null)
+    {
+        // Future Reference: Decode dwFlags as dwFlagsPackedData
+    }
+    
+    if (m.pctbRequest != null)
+    {
+        // Future Reference: Decode pctbRequest according to RequestType determined by dwFlags
+    }
+    
+    if (m.pctbFullResponse != null)
+    {
+        // Future Reference: Decode pctbFullResponse according to Flags determined by dwFlags
+    }
+	
+	// Custom Marshaling for Response Message
+    if (m.pctbEncodedCert != null)
+    {
+        DecodeCertTransBlobAsn1<Certificate>(m.pctbEncodedCert, "X509 Certificate");
+    }
+    
+    if (m.pctbDispositionMessage != null)
+    {
+        DecodeCertTransBlob<string>(m.pctbDispositionMessage, "Unicode String");
+    }
+}
+
+void CustomMarshalGetCAProperty(ICertRequestD2.GetCAProperty m)
+{
+	// Custom Marshaling for Response Message
+    if (m.pctbPropertyValue != null)
+    {
+        if (m.PropID is GetCAPropertyID)
+		{
+		    switch (m.PropID)
+		    {
+				case GetCAPropertyID.CR_PROP_FILEVERSION =>
+					DecodeCertTransBlob<string>(m.pctbPropertyValue, "Unicode String");
+				case GetCAPropertyID.CR_PROP_PRODUCTVERSION =>
+					DecodeCertTransBlob<string>(m.pctbPropertyValue, "Unicode String");
+				case GetCAPropertyID.CR_PROP_EXITCOUNT =>
+					DecodeCertTransBlobNDR<CAINFO>(m.pctbPropertyValue, "NDR Encoding");
+				case GetCAPropertyID.CR_PROP_EXITDESCRIPTION =>
+					DecodeCertTransBlob<string>(m.pctbPropertyValue, "Unicode String");
+				case GetCAPropertyID.CR_PROP_POLICYDESCRIPTION =>
+					DecodeCertTransBlob<string>(m.pctbPropertyValue, "Unicode String");
+				case GetCAPropertyID.CR_PROP_CANAME =>
+					DecodeCertTransBlob<string>(m.pctbPropertyValue, "Unicode String");
+				case GetCAPropertyID.CR_PROP_SANITIZEDCANAME =>
+					DecodeCertTransBlob<string>(m.pctbPropertyValue, "Unicode String");
+				case GetCAPropertyID.CR_PROP_SHAREDFOLDER =>
+					DecodeCertTransBlob<string>(m.pctbPropertyValue, "Unicode String");
+				case GetCAPropertyID.CR_PROP_PARENTCA =>
+					DecodeCertTransBlob<string>(m.pctbPropertyValue, "Unicode String");
+				case GetCAPropertyID.CR_PROP_CATYPE =>
+					DecodeCertTransBlobNDR<CAINFO>(m.pctbPropertyValue, "NDR Encoding");
+				case GetCAPropertyID.CR_PROP_CASIGCERTCOUNT =>
+					DecodeCertTransBlobNDR<CAINFO>(m.pctbPropertyValue, "NDR Encoding");
+				case GetCAPropertyID.CR_PROP_CASIGCERT =>
+					DecodeCertTransBlobAsn1<Certificate>(m.pctbPropertyValue, "X509 Certificate");
+				case GetCAPropertyID.CR_PROP_CASIGCERTCHAIN =>
+					// Decode as CMSBlob, certificate chain specified in RFC3280
+				case GetCAPropertyID.CR_PROP_CAXCHGCERTCOUNT =>
+					DecodeCertTransBlobNDR<CAINFO>(m.pctbPropertyValue, "NDR Encoding");
+				case GetCAPropertyID.CR_PROP_CAXCHGCERT =>
+					DecodeCertTransBlobAsn1<Certificate>(m.pctbPropertyValue, "X509 Certificate");
+				case GetCAPropertyID.CR_PROP_CAXCHGCERTCHAIN =>
+					// Decode as CMSBlob, certificate chain specified in RFC3280
+				case GetCAPropertyID.CR_PROP_BASECRL =>
+					DecodeCertTransBlobAsn1<CertificateList>(m.pctbPropertyValue, "X509 Certificate List");
+				case GetCAPropertyID.CR_PROP_DELTACRL =>
+					DecodeCertTransBlobAsn1<CertificateList>(m.pctbPropertyValue, "X509 Certificate List");
+				case GetCAPropertyID.CR_PROP_CACERTSTATE =>
+					// Decode as array<byte>
+				case GetCAPropertyID.CR_PROP_CRLSTATE =>
+					// Decode as array<byte>
+				case GetCAPropertyID.CR_PROP_CAPROPIDMAX =>
+					DecodeCertTransBlobNDR<CAINFO>(m.pctbPropertyValue, "NDR Encoding");
+				case GetCAPropertyID.CR_PROP_DNSNAME =>
+					DecodeCertTransBlob<string>(m.pctbPropertyValue, "Unicode String");
+				case GetCAPropertyID.CR_PROP_ROLESEPARATIONENABLED =>
+					DecodeCertTransBlobNDR<CAINFO>(m.pctbPropertyValue, "NDR Encoding");
+				case GetCAPropertyID.CR_PROP_KRACERTUSEDCOUNT =>
+					DecodeCertTransBlobNDR<CAINFO>(m.pctbPropertyValue, "NDR Encoding");
+				case GetCAPropertyID.CR_PROP_KRACERTCOUNT =>
+					DecodeCertTransBlobNDR<CAINFO>(m.pctbPropertyValue, "NDR Encoding");
+				case GetCAPropertyID.CR_PROP_KRACERT =>
+					DecodeCertTransBlobAsn1<Certificate>(m.pctbPropertyValue, "X509 Certificate");
+				case GetCAPropertyID.CR_PROP_KRACERTSTATE =>
+					// Decode as array<byte>
+				case GetCAPropertyID.CR_PROP_ADVANCEDSERVER =>
+					DecodeCertTransBlobNDR<CAINFO>(m.pctbPropertyValue, "NDR Encoding");
+				case GetCAPropertyID.CR_PROP_TEMPLATES =>
+					// No need decode, empty CERTTRANSBLOB
+				case GetCAPropertyID.CR_PROP_BASECRLPUBLISHSTATUS =>
+					DecodeCertTransBlob<ULONG>(m.pctbPropertyValue, "Unsigned Long Integer");
+				case GetCAPropertyID.CR_PROP_DELTACRLPUBLISHSTATUS =>
+					DecodeCertTransBlob<ULONG>(m.pctbPropertyValue, "Unsigned Long Integer");
+				case GetCAPropertyID.CR_PROP_CASIGCERTCRLCHAIN =>
+					// Decode as CMSBlob, certificate chain specified in RFC3280
+				case GetCAPropertyID.CR_PROP_CAXCHGCERTCRLCHAIN =>
+					// Decode as CMSBlob, certificate chain specified in RFC3280
+				case GetCAPropertyID.CR_PROP_CACERTSTATUSCODE =>
+					DecodeCertTransBlob<ULONG>(m.pctbPropertyValue, "Unsigned Long Integer");
+				case GetCAPropertyID.CR_PROP_CAFORWARDCROSSCERT =>
+					DecodeCertTransBlobAsn1<Certificate>(m.pctbPropertyValue, "X509 Certificate");
+				case GetCAPropertyID.CR_PROP_CABACKWARDCROSSCERT =>
+					DecodeCertTransBlobAsn1<Certificate>(m.pctbPropertyValue, "X509 Certificate");
+				case GetCAPropertyID.CR_PROP_CAFORWARDCROSSCERTSTATE =>
+					// Decode as array<byte>
+				case GetCAPropertyID.CR_PROP_CABACKWARDCROSSCERTSTATE =>
+					// Decode as array<byte>
+				case GetCAPropertyID.CR_PROP_CACERTVERSION =>
+					// Decode as array<byte>
+				case GetCAPropertyID.CR_PROP_SANITIZEDCASHORTNAME =>
+					DecodeCertTransBlob<string>(m.pctbPropertyValue, "Unicode String");
+				case GetCAPropertyID.CR_PROP_CERTCDPURLS =>
+					DecodeCertTransBlob<string>(m.pctbPropertyValue, "Unicode String");
+				case GetCAPropertyID.CR_PROP_CERTAIAURLS =>
+					DecodeCertTransBlob<string>(m.pctbPropertyValue, "Unicode String");			
+				case GetCAPropertyID.CR_PROP_CERTAIAOCSPRLS =>
+					DecodeCertTransBlob<string>(m.pctbPropertyValue, "Unicode String");
+				case GetCAPropertyID.CR_PROP_LOCALENAME =>
+					DecodeCertTransBlob<string>(m.pctbPropertyValue, "Unicode String");
+				case GetCAPropertyID.CR_PROP_SUBJECTTEMPLATE_OIDS =>
+					DecodeCertTransBlob<string>(m.pctbPropertyValue, "Unicode String");
+				default =>
+					// Unknown PropID, decode as array<byte>
+			}
+		}
+	}
+}
+
+void CustomMarshalGetCAPropertyInfo(ICertRequestD2.GetCAPropertyInfo m)
+{
+	// Custom Marshaling for Response Message
+    if (m.pctbPropInfo != null)
+    {
+		// Future Reference: Decode pctbPropInfo as CATRANSPROP
+	    //array<CATRANSPROP> WCCECATransProp = [m.pcProperty];
+        //array<byte> WCCEString = [m.pcProperty];
+    }
+}
+
+string WcceHResultValuesToText(any data)
+{
+	uint ReturnValue = data as uint;
+	
+	if (ReturnValue in WcceHResultMap)
+	{
+		return WcceHResultMap[ReturnValue];
+	}
+	else
+	{
+		return HResultValuesToText(ReturnValue);
+	}
+}
+
+string fchainToText(any data)
+{
+	DWORD fchain = data as DWORD;
+	
+	if (fchain is GetCACert_fchain1)
+	{
+	    return EnumToString(fchain, "WCCE.GetCACert_fchain1");
+	}
+	else if ((fchain & 0xFFFF0000) is GetCACert_fchain2)
+	{
+		return EnumToString(fchain & 0xFFFF0000, "WCCE.GetCACert_fchain2");
+	}
+	else
+	{
+		return null;
+	}
+}

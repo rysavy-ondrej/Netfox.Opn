@@ -1,0 +1,185 @@
+protocol CSSP with
+Asn1EncodingDefaults{EncodingRule = Asn1EncodingRule.DER},
+Standard.Documentation
+{
+    ProtocolName = "Credential Security Support Provider (CredSSP) Protocol",
+    ShortName = "CSSP",
+    DocumentName = "MS-CSSP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+    [
+        new Reference {Name = "CSSP", Version = "11.0", Date = "05/15/2014", ProgramName = ProgramName.WSPP}
+    ],
+    RevisionSummary = 
+    [
+        new Revision {Class = RevisionClass.Major, Version = "380827", Date = "09/22/2015"}
+    ]
+};
+
+using Technologies.ASN1;
+using TCP;
+using DecodingUtility; // WORKAROUND: compiler bug#3131164, When type A inherit from type B, module C use tye A, and A, B, C is in different module file, compiler will give a compilation error
+using GSSAPI;
+using NLMP;
+using Utility;
+using KerberosV5;
+
+endpoint Server over TCP.Server
+    accepts TSRequest
+    issues TSRequest;
+
+type CsspDecodingHelper : TCPDecodingHelper
+{
+    void InitializeCsspDecodingHelper(TCP.Server server)
+    {
+        Initialize(new TCPDecodingCache(), new TCPDecodingCache(),
+            "CSSP", (endpoint CSSP.Server over server), IsCsspProtocol,
+            IsSufficientCsspMsg, DecodeSingleCsspMessage, (binary x) => nothing);
+    }
+}
+
+optional any message DecodeSingleCsspMessage(stream s)
+{
+    return Asn1BerDecoder<TSRequest>(s);
+}
+
+bool? IsCsspProtocol(binary data)
+{
+    return data[0] == 0x30;
+}
+
+uint? IsSufficientCsspMsg(binary data)
+{
+    if (CalculateAsn1BerLength(data) is length:uint)
+    {
+        return length <= data.Count ? 0 : length;
+    }
+    return null;
+}
+
+bool IsCSSP(binary bin)
+{
+    // 0x30 is the beginning of CredSSP message
+    if (bin.Count == 0 ||
+        bin[0] != 0x30)
+    {
+        return false;
+    }
+
+    // The ASN.1 definition for CSSP is:
+    // TSRequest ::= SEQUENCE {
+    //     version    [0] INTEGER,
+    //     negoTokens [1] NegoData  OPTIONAL,
+    //     authInfo   [2] OCTET STRING OPTIONAL,
+    //     pubKeyAuth [3] OCTET STRING OPTIONAL,
+    //     errorCode  [4] INTEGER OPTIONAL
+    // }
+    // So the first element has an explicit tag 0xA0
+    int len = GetAsn1LenLen(bin[1]) + 2;
+    if (len <= bin.Count && bin[len] == 0xA0)
+    {
+        return true;
+    }
+    else
+    {
+        return false;
+    }
+}
+
+// Get the length of ASN1 length
+int GetAsn1LenLen(byte val)
+{
+    return (val & 0x80) == 0 ? 0 : (val & 0x7F);
+}
+
+// Section 2.2.1 TSRequest
+message TSRequest
+{
+    Integer version with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Explicit};
+    optional NegoData negoTokens with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Explicit};
+    optional OctetString authInfo with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Explicit};
+    optional OctetString pubKeyAuth with Asn1Encoding{TagNumber = 3, Tagging = Asn1Tagging.Explicit};
+    optional Integer errorCode with Asn1Encoding{TagNumber = 4, Tagging = Asn1Tagging.Explicit};
+    
+    override string ToString()
+    {
+        return "TSRequest, Version: " + version.ToString();
+    }
+}
+
+type NegoData
+{
+    (array<GssapiType> | array<NlmpMessage> | array<KrbMessage> | binary) negoToken with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Explicit},
+        Encoding{Decoder = NegoTokenDecoder, SourcePattern = TypeOf<OctetString>()};
+    
+    optional (array<GssapiType> | array<NlmpMessage> | array<KrbMessage> | binary) NegoTokenDecoder(OctetString data)
+    {
+        if (data is bin:binary)
+        {
+            stream s = bin;
+            
+            if (IsGSSAPIByCheckingTag(bin))
+            {
+                // SPNG
+                array<GssapiType> ret = [];
+                while (true)
+                {
+                    if (DecodeGssapiAndSetAnnotation(s, null) is gssapiType:GssapiType)
+                    {
+                        ret += [gssapiType];
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+
+                return ret;
+            }
+            else if (IsNLMP(bin))
+            {
+                // NLMP
+                array<NlmpMessage> ret = [];
+                while (true)
+                {
+                    if (NlmpDecoder(s) is nlmpMessage:NlmpMessage)
+                    {
+                        ret += [nlmpMessage];
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+
+                return ret;
+            }
+            else if (((bin[0] & 0x1F) as byte) in ApplicationTagNumber)
+            {
+                // KerberosV5
+                array<KrbMessage> ret = [];
+                while (true)
+                {
+                    if (BinaryDecoder<KrbMessage[false]>(s) is krbMessage:KrbMessage)
+                    {
+                        ret += [krbMessage];
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+                
+                return ret;
+            }
+            
+            return bin;
+        }
+        
+        return nothing;
+    }
+}

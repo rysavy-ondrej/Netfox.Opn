@@ -1,0 +1,140 @@
+module SOAP12 
+with XmlEncodingDefaults
+{
+    Namespace = Soap12Namespace,
+    Order = XmlOrderIndicator.Sequence
+},
+Documentation
+{
+    ProtocolName = "Simple Object Access Protocol 1.2",
+    ShortName = "SOAP12",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "SOAP12", Link = "http://www.w3.org/TR/soap12"},
+        ],
+    RevisionSummary = 
+        [
+            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="09/02/2011"}
+        ]
+};
+
+using XSD;
+using Utility;
+
+// -------------------------------------------
+// Data types
+
+// BUGBUG: The XmlEncoding aspect attached to type get ignored by compiler
+type Envelope
+{
+    optional xml Header;
+    xml Body;
+}
+
+/*
+    Global Attributes.  The following attributes are intended to be
+    usable via qualified attribute names on any complex type referencing
+    them.
+*/
+pattern MustUnderstand = bool with XmlEncoding{Name = "MustUnderstand", Kind = XmlKind.Attribute};
+pattern Relay = bool with XmlEncoding{Name = "Relay", Kind = XmlKind.Attribute};
+pattern Role = XSAnyURI with XmlEncoding{Name = "Role", Kind = XmlKind.Attribute};
+/* 
+    'encodingStyle' indicates any canonicalization conventions
+    followed in the contents of the containing element.  For example, the
+    value 'http://www.w3.org/2003/05/soap-encoding' indicates the pattern
+    described in the SOAP Version 1.2 Part 2: Adjuncts Recommendation
+*/
+pattern EncodingStyle = XSAnyURI with XmlEncoding{Name = "EncodingStyle", Kind = XmlKind.Attribute};
+
+// SOAP Fault
+/*
+structure of SOAP Fault:
+    +--Fault
+        +--Code
+        |   +--Value
+        |   +--Subcode
+        |       +--Value
+        |       +Subcode
+        +--Reason
+        |   +--Text
+        |   +--...
+        +--Node?
+        +--Role?
+        +--Detail?
+*/
+
+type Fault
+{
+    FaultCode Code;
+    FaultReason Reason;
+    optional string Node;
+    optional string Role;
+    optional xml Detail;
+}
+    
+type FaultReason
+{
+    array<ReasonText> Text where value.Count() >= 1;
+}
+
+// If this type is encoded as XML Element, Lang will be required Attribute
+type ReasonText
+{
+    string Value with XmlEncoding{Kind = XmlKind.Text };
+    // BUGBUG: XSLanguage has declared its namespace is XmlNamespace, it shouldn't be overwritten here
+    //XSLanguage Lang with XmlEncoding{Name = "lang", Kind = XmlKind.Attribute };
+    XSLanguage Lang with XmlEncoding{Name = "lang", Namespace = XmlNamespace, Kind = XmlKind.Attribute};
+}
+
+type FaultCode
+{
+    // Cannot use FaultCodeEnum pattern because sometimes the value has namespace, like "s:Sender", this will cause parsing failure.
+    string Value where ValidationCheck(value.Contains("DataEncodingUnknown")
+                                       || value.Contains("MustUnderstand")
+                                       || value.Contains("Receiver")
+                                       || value.Contains("Sender")
+                                       || value.Contains("VersionMismatch"),
+                                       null, "FaultCode must be one of \"DataEncodingUnknown\", \"MustUnderstand\", \"Receiver\", \"Sender\", \"VersionMismatch\"");
+    optional FaultSubcode Subcode;
+}
+
+pattern FaultCodeEnum = enum string
+{
+    DataEncodingUnknown = "DataEncodingUnknown",
+    MustUnderstand = "MustUnderstand",
+    Receiver = "Receiver",
+    Sender = "Sender",
+    VersionMismatch = "VersionMismatch",
+};
+
+type FaultSubcode
+{
+    string Value;
+    optional FaultSubcode Subcode;
+}
+
+type NotUnderstoodType
+{
+    string QName with XmlEncoding{Name = "qname", Kind = XmlKind.Attribute};
+}
+
+type SupportedEnvType
+{
+    string QName with XmlEncoding{Name = "qname", Kind = XmlKind.Attribute};
+}
+
+type UpgradeType
+{
+     array<SupportedEnvType> SupportedEnvelope where value.Count() >= 1;
+}
+
+// SOAP 1.2
+const string Soap12Namespace = "http://www.w3.org/2003/05/soap-envelope";    
+const string Soap12ContentType = "application/soap+xml";
+

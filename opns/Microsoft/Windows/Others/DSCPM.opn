@@ -1,0 +1,611 @@
+protocol DSCPM with 
+Documentation
+{
+    ProtocolName = "Desired State Configuration Pull Model Protocol",
+    ShortName = "DSCPM",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "MS-DSCPM", Version = "3.0", Date = "08/19/2015"},
+        ]
+};
+using Standard;
+using Utility;
+using HTTP;
+using InfrastructureResources;
+using Diagnostics;
+using OthersResources;
+
+// ------------------------------------- Endpoint & Actor---------------------------------------//
+endpoint Server
+    over HTTP.Server
+    provides DSCPMContract;
+
+client endpoint Client connected to Server;
+
+autostart actor DSCPMServerOverHTTP(HTTP.Server server)
+{
+    any message DSCPMMsg;
+    MsgType msgType;
+    
+    process server accepts httpRequest:HttpContract.Request where IsDSCPMRequestMessage(httpRequest, out msgType, out DSCPMMsg)
+    {
+        if (msgType == MsgType.GetConfigurationRequest)
+        {
+            DSCPMContract.GetConfigurationRequest request = DSCPMMsg as DSCPMContract.GetConfigurationRequest;
+            ValidationCheck(UUID(request.ConfigurationId) != nothing , null, DiagnosisLevel.Error, 
+                () => Format(DSCPM_UNDEFINED_FORMAT, "ConfigurationId", "GetConfigurationRequest"));
+            if ("ConfigurationName" in httpRequest.Headers)
+            {
+                request.ConfigurationName = httpRequest.Headers["ConfigurationName"] as string;
+            }
+            else
+            {
+                request.ConfigurationName = nothing;
+            }
+            dispatch (endpoint DSCPM.Server over server) accepts request;
+        }
+        else if (msgType == MsgType.GetModuleRequest)
+        {
+            DSCPMContract.GetModuleRequest request = DSCPMMsg as DSCPMContract.GetModuleRequest;
+            ValidationCheck(UUID(request.ConfigurationId) != nothing , null, DiagnosisLevel.Error, 
+                () => Format(DSCPM_UNDEFINED_FORMAT, "ConfigurationId", "GetModuleRequest"));
+            ValidationCheck(ModuleNameSyntax(request.ModuleName) != nothing , null, DiagnosisLevel.Error, 
+                () => Format(DSCPM_UNDEFINED_FORMAT, "ModuleName", "GetModuleRequest"));
+            ValidationCheck(request.ModuleVersion == null || ModuleVersionSyntax(request.ModuleVersion) != nothing , null, DiagnosisLevel.Error, 
+                () => Format(DSCPM_UNDEFINED_FORMAT, "ModuleVersion", "GetModuleRequest"));
+            dispatch (endpoint DSCPM.Server over server) accepts request;
+        }
+        else if (msgType == MsgType.GetActionRequest)
+        {
+            DSCPMContract.GetActionRequest request = DSCPMMsg as DSCPMContract.GetActionRequest;
+            ValidationCheck(UUID(request.ConfigurationId) != nothing , null, DiagnosisLevel.Error, 
+                () => Format(DSCPM_UNDEFINED_FORMAT, "ConfigurationId", "GetActionRequest"));
+            if (JsonDecoder<GetActionRequestBody>(httpRequest.Payload) is body:GetActionRequestBody)
+            {
+                request.RequestBody = body;
+            }
+            else
+            {
+                request.RequestBody = new GetActionRequestBody{};
+                ValidationCheck(false, null, DiagnosisLevel.Error, 
+                    () => Format(DSCPM_DECODING_FAILURE_WITH_JSON, "RequestBody", "GetActionRequest"));
+            }
+            dispatch (endpoint DSCPM.Server over server) accepts request;
+        }
+        else if (msgType == MsgType.SendStatusReportRequest)
+        {
+            DSCPMContract.SendStatusReportRequest request = DSCPMMsg as DSCPMContract.SendStatusReportRequest;
+            ValidationCheck(UUID(request.ConfigurationId) != nothing , null, DiagnosisLevel.Error, 
+                () => Format(DSCPM_UNDEFINED_FORMAT, "ConfigurationId", "SendStatusReportRequest"));
+            if (JsonDecoder<SendStatusReportRequestBody>(httpRequest.Payload) is body:SendStatusReportRequestBody)
+            {
+                request.RequestBody = body;
+            }
+            else
+            {
+                ValidationCheck(false, null, DiagnosisLevel.Error, 
+                    () => Format(DSCPM_DECODING_FAILURE_WITH_JSON, "RequestBody", "SendStatusReportRequest"));
+            }
+            dispatch (endpoint DSCPM.Server over server) accepts request;
+        }
+        else if (msgType == MsgType.GetStatusReportRequest)
+        {
+            ValidationCheck(UUID((DSCPMMsg as DSCPMContract.GetStatusReportRequest).ConfigurationId) != nothing , null, DiagnosisLevel.Error, 
+                () => Format(DSCPM_UNDEFINED_FORMAT, "ConfigurationId", "GetStatusReportRequest"));
+            dispatch (endpoint DSCPM.Server over server) accepts DSCPMMsg;
+        }
+    }
+
+    process server issues httpResponse:HttpContract.Response where IsDSCPMResponseMessage(httpResponse, out msgType)
+    {
+        if (msgType == MsgType.GetConfigurationResponse)
+        {
+            DSCPMContract.GetConfigurationResponse response = new DSCPMContract.GetConfigurationResponse{};
+            if ("Checksum" in httpResponse.Headers)
+            {
+                response.Checksum = httpResponse.Headers["Checksum"] as string;
+            }
+            else 
+            {
+                ValidationCheck(false, null, DiagnosisLevel.Error, 
+                    () => Format(DSCPM_LACK_OF_FIELD, "Checksum", "Headers", "HTTP.Response"));
+            }
+            if ("ChecksumAlgorithm" in httpResponse.Headers)
+            {
+                response.ChecksumAlgorithm = httpResponse.Headers["ChecksumAlgorithm"] as string;
+            }
+            else
+            {
+                ValidationCheck(false, null, DiagnosisLevel.Error, 
+                    () => Format(DSCPM_LACK_OF_FIELD, "ChecksumAlgorithm", "Headers", "HTTP.Response"));
+            }
+            response.StatusCode = httpResponse.StatusCode;
+            response.ResponseBody = new GetConfigurationResponseBody{configuration = httpResponse.Payload};
+            dispatch (endpoint DSCPM.Server over server) issues response;
+        }
+        else if (msgType == MsgType.GetModuleResponse)
+        {
+            DSCPMContract.GetModuleResponse response = new DSCPMContract.GetModuleResponse{};
+            if ("Checksum" in httpResponse.Headers)
+            {
+                response.Checksum = httpResponse.Headers["Checksum"] as string;
+            }
+            else
+            {
+                ValidationCheck(false, null, DiagnosisLevel.Error, 
+                    () => Format(DSCPM_LACK_OF_FIELD, "Checksum", "Headers", "HTTP.Response"));
+            }
+            if ("ChecksumAlgorithm" in httpResponse.Headers)
+            {
+                response.ChecksumAlgorithm = httpResponse.Headers["ChecksumAlgorithm"] as string;
+            }
+            else
+            {
+                ValidationCheck(false, null, DiagnosisLevel.Error, 
+                    () => Format(DSCPM_LACK_OF_FIELD, "ChecksumAlgorithm", "Headers", "HTTP.Response"));
+            }
+            response.ResponseBody = new GetModuleResponseBody{ModuleData = httpResponse.Payload};
+            response.StatusCode = httpResponse.StatusCode;
+            dispatch (endpoint DSCPM.Server over server) issues response;
+        }
+        else if (msgType == MsgType.GetActionResponse)
+        {
+            DSCPMContract.GetActionResponse response = new DSCPMContract.GetActionResponse{};
+            if (JsonDecoder<GetActionResponseBody>(httpResponse.Payload) is body:GetActionResponseBody)
+            {
+                response.ResponseBody = body;
+            }
+            else
+            {
+                response.ResponseBody = new GetActionResponseBody{};
+                ValidationCheck(false, null, DiagnosisLevel.Error, 
+                    () => Format(DSCPM_DECODING_FAILURE_WITH_JSON, "ResponseBody", "GetActionResponse"));
+            }
+            dispatch (endpoint DSCPM.Server over server) issues response;
+        }
+        else if (msgType == MsgType.SendStatusReportResponse)
+        {
+            DSCPMContract.SendStatusReportResponse response = 
+                new DSCPMContract.SendStatusReportResponse
+                {
+                    StatusCode = httpResponse.StatusCode,
+                };
+            dispatch (endpoint DSCPM.Server over server) issues response;
+        }
+        else if (msgType == MsgType.GetStatusReportResponse)
+        {
+            DSCPMContract.GetStatusReportResponse response = 
+                new DSCPMContract.GetStatusReportResponse
+                {
+                    StatusCode = httpResponse.StatusCode,
+                    ResponseBody = 
+                        new GetStatusReportResponseBody
+                        {
+                            StatusReportContent = httpResponse.Payload,
+                        },
+                };
+            dispatch (endpoint DSCPM.Server over server) issues response;
+        }
+    }
+}
+
+// ----------------------- message-------------------------------- 
+contract DSCPMContract
+{
+    // 3.1 GetConfiguration -- GET
+    accepts message GetConfigurationRequest
+    {
+        string ConfigurationId;
+        optional string ConfigurationName;
+        override string ToString()
+        {
+            string summary = "GetConfigurationRequest";
+            if (ConfigurationId != null)
+            {
+                summary += ", ConfigurationId: " + ConfigurationId;
+            }
+            if (ConfigurationName is configName:string)
+            {
+                summary += ", ConfigurationName: " + configName;
+            }
+            return summary;
+        }
+    }
+
+    issues message GetConfigurationResponse
+    {
+        string Checksum;
+        string ChecksumAlgorithm;
+        uint StatusCode;
+        GetConfigurationResponseBody ResponseBody;
+        override string ToString()
+        {
+            return "GetConfigurationResponse, StatusCode: " + EnumToStringInSummary<DSCPM.StatusCodeType>(StatusCode);
+        }
+    }
+
+    // 3.2 GetModule -- GET
+    accepts message GetModuleRequest
+    {
+        string ConfigurationId;
+        string ModuleName;
+        string ModuleVersion;
+        override string ToString()
+        {
+            string summary = "GetModuleRequest";
+            if (ConfigurationId != null)
+            {
+                summary += ", ConfigurationId: " + ConfigurationId;
+            }
+            if (ModuleName != null)
+            {
+                summary += ", ModuleName: " + ModuleName;
+            }
+            if (ModuleVersion != null)
+            {
+                summary += ", ModuleVersion: " + ModuleVersion;
+            }
+            return summary;
+        }
+    }
+
+    issues message GetModuleResponse
+    {
+        string Checksum;
+        string ChecksumAlgorithm;
+        uint StatusCode;
+        GetModuleResponseBody ResponseBody;
+        override string ToString()
+        {
+            return "GetModuleResponse, StatusCode: " + EnumToStringInSummary<DSCPM.StatusCodeType>(StatusCode);
+        }
+    }
+
+    // 3.3 GetAction -- POST
+    accepts message GetActionRequest
+    {
+        string ConfigurationId;
+        GetActionRequestBody RequestBody;
+        override string ToString()
+        {
+            string summary = "GetActionRequest";
+            if (ConfigurationId != null)
+            {
+                summary += ", ConfigurationId: " + ConfigurationId;
+            }
+            summary += ", StatusCode: " + EnumToStringInSummary<DSCPM.StatusCodeType>(RequestBody.StatusCode);
+            return summary;
+        }
+    }
+    
+    issues message GetActionResponse
+    {
+        GetActionResponseBody ResponseBody;
+        override string ToString()
+        {
+            string summary = "GetActionResponse";
+            if (ResponseBody.@value != null && ResponseBody.@value != "")
+            {
+                summary += ", value: " + ResponseBody.@value;
+            }
+            return summary;
+        }
+    }
+
+    // 3.4 SendStatusReport -- POST
+    accepts message SendStatusReportRequest
+    {
+        string ConfigurationId;
+        SendStatusReportRequestBody RequestBody;
+        override string ToString()
+        {
+            string summary = "SendStatusReportRequest";
+            if (ConfigurationId != null)
+            {
+                summary += ", ConfigurationId: " + ConfigurationId;
+            }
+            if (RequestBody != null)
+            {
+                summary += ", JobId: " + RequestBody.JobId;
+                if (RequestBody.NodeName is nodeName:string)
+                {
+                    summary += ", NodeName: " + nodeName;
+                }
+            }
+            return summary;
+        }
+    }
+
+    issues message SendStatusReportResponse
+    {
+        uint StatusCode;
+        override string ToString()
+        {
+            return "GetStatusReportResponse, StatusCode: " + EnumToStringInSummary<DSCPM.StatusCodeType>(StatusCode);
+        }
+    }
+
+    // 3.5 GetStatusReport -- GET
+    accepts message GetStatusReportRequest
+    {
+        string ConfigurationId;
+        optional string JobId;
+        // request body // TDI #72779
+        override string ToString()
+        {
+            string summary = "GetStatusReportRequest";
+            if (ConfigurationId != null)
+            {
+                summary += ", ConfigurationId: " + ConfigurationId;
+            }
+            if (JobId is jobId:string)
+            {
+                summary += ", JobId: " + jobId;
+            }
+            return summary;
+        }
+    }
+
+    issues message GetStatusReportResponse
+    {
+        uint StatusCode;
+        GetStatusReportResponseBody ResponseBody;
+        override string ToString()
+        {
+            return "GetStatusReportResponse, StatusCode: " + EnumToStringInSummary<DSCPM.StatusCodeType>(StatusCode);
+        }
+    }
+}
+
+// --------------------------structures and syntax-------------------------------------------//
+// 3.1.5.2.2
+type GetConfigurationResponseBody
+{
+    binary configuration;
+}
+
+// 3.2.5.1.1.2
+type GetModuleResponseBody
+{
+    binary ModuleData;
+}
+
+// 3.3.5.1.1.1   Request Body
+type GetActionRequestBody
+{
+    string Checksum;
+    string ChecksumAlgorithm;
+    string NodeCompliant;
+    uint StatusCode;
+    optional string ConfigurationName;
+}
+// 3.3.5.1.1.2   Response Body
+type GetActionResponseBody
+{
+    string @value where ValidationCheck((value != null) && InRange<GetActionValueType>(value), null, DiagnosisLevel.Error, 
+         () => Format(INFRASTRUCTURE_STR_CHECK_ENUM_VALUE, ["DSCPM", "value", INFRASTRUCTURE_STR_TYPE, "GetActionResponseBody", 
+         INFRASTRUCTURE_STR_MUST, "GetConfiguration, OK", value]));
+}
+
+// 3.4.5.1.1.1    Request Body
+type SendStatusReportRequestBody
+{
+    string JobId;
+    optional string OperationType;
+    optional string LCMVersion;
+    optional string ReportFormatVersion;
+    optional string ConfigurationVersion;
+    optional string NodeName;
+    optional string IpAddress;
+    optional string StartTime;
+    optional string EndTime;
+    optional string Errors;
+    optional string StatusData;
+}
+
+// 3.5.5.1.1.1    Request Body
+type GetStatusReportRequestBody
+{
+    string JobId;
+    string NodeName;
+    string OperationType;
+    string LCMVersion;
+    string ReportFormatVersion;
+    string ConfigurationVersion;
+    string IpAddress;
+    string StartTime;
+    string EndTime;
+    string Errors;
+    string StatusData;
+}
+
+// 3.5.5.1.1.1    Response Body
+type GetStatusReportResponseBody
+{
+    binary StatusReportContent;
+}
+
+bool IsDSCPMRequestMessage(HttpContract.Request httpRequest, out MsgType msgType, out any message msg)
+{
+    if (httpRequest.Uri.AbsPath is absPath:string)
+    {
+        if (absPath.IndexOf("Action(ConfigurationId=") is actionIndex:int && actionIndex > -1)
+        {
+            switch (absPath.Segment(actionIndex))
+            {
+                case str:string from GetConfigurationSyntax =>
+                    msgType = MsgType.GetConfigurationRequest;
+                    msg = new DSCPMContract.GetConfigurationRequest
+                        {
+                            ConfigurationId = str,
+                        };
+                    return true;
+                case str:string from GetActionSyntax =>
+                    msgType = MsgType.GetActionRequest;
+                    msg = new DSCPMContract.GetActionRequest
+                        {
+                            ConfigurationId = str,
+                        };
+                    return true;
+                default =>
+                    return false;
+            }
+        }
+        else if (absPath.IndexOf("Module(ConfigurationId=") is moduleIndex:int && moduleIndex > -1)
+        {
+            switch (absPath.Segment(moduleIndex))
+            {
+                case getModuleType:GetModuleType from GetModuleSyntax =>
+                    msgType = MsgType.GetModuleRequest;
+                    msg = new DSCPMContract.GetModuleRequest
+                        {
+                            ConfigurationId = getModuleType.ConfigurationId,
+                            ModuleName = getModuleType.ModuleName,
+                            ModuleVersion = getModuleType.ModuleVersion,
+                        };
+                    return true;
+                default =>
+                    return false;
+            }
+        }
+        else if (absPath.IndexOf("Nodes(ConfigurationId=") is nodesIndex:int && nodesIndex > -1)
+        {
+            switch (absPath.Segment(nodesIndex))
+            {
+                case str:string from SendStatusReportSyntax =>
+                    msgType = MsgType.SendStatusReportRequest;
+                    msg = new DSCPMContract.SendStatusReportRequest
+                        {
+                            ConfigurationId = str,
+                        };
+                    return true;
+                case req:DSCPMContract.GetStatusReportRequest from GetStatusReportSyntax =>
+                    msgType = MsgType.GetStatusReportRequest;
+                    msg = req;
+                    return true;
+                default =>
+                    return false;
+            }
+        }
+    }
+    return false;
+}
+
+bool IsDSCPMResponseMessage(HttpContract.Response httpResponse, out MsgType msgType)
+{
+    if ((httpResponse#Uri is uri:UriType) && (uri.AbsPath is absPath:string))
+    {
+        if (absPath.IndexOf("Action(ConfigurationId=") is actionIndex:int && actionIndex > -1)
+        {
+            switch (absPath.Segment(actionIndex))
+            {
+                case str:string from GetConfigurationSyntax =>
+                    msgType = MsgType.GetConfigurationResponse;
+                    return true;
+                case str:string from GetActionSyntax =>
+                    msgType = MsgType.GetActionResponse;
+                    return true;
+                default =>
+                    return false;
+            }
+        }
+        else if (absPath.IndexOf("Module(ConfigurationId=") is moduleIndex:int && moduleIndex > -1)
+        {
+            switch (absPath.Segment(moduleIndex))
+            {
+                case getModuleType:GetModuleType from GetModuleSyntax =>
+                    msgType = MsgType.GetModuleResponse;
+                    return true;
+                default =>
+                    return false;
+            }
+        }
+        else if (absPath.IndexOf("Nodes(ConfigurationId=") is nodesIndex:int && nodesIndex > -1)
+        {
+            switch (absPath.Segment(nodesIndex))
+            {
+                case str:string from SendStatusReportSyntax =>
+                    msgType = MsgType.SendStatusReportResponse;
+                    return true;
+                case req:DSCPMContract.GetStatusReportRequest from GetStatusReportSyntax =>
+                    msgType = MsgType.GetStatusReportResponse;
+                    return true;
+                default =>
+                    return false;
+            }
+        }
+    }
+    return false;
+}
+
+type GetModuleType
+{
+    string ConfigurationId;
+    string ModuleName;
+    string ModuleVersion;
+}
+
+syntax GetConfigurationSyntax = "Action(ConfigurationId='" s1:regex{[^']*} "')/ConfigurationContent"=> s1;
+syntax GetModuleSyntax = "Module(ConfigurationId='" s1:regex{[^']*} "',ModuleName='" s2:regex{[^']*} "',ModuleVersion='" s3:regex{[^']*} "')/ModuleContent"
+    => new GetModuleType
+    {
+        ConfigurationId = s1,
+        ModuleName = s2,
+        ModuleVersion = s3
+    };
+syntax GetActionSyntax = "Action(ConfigurationId='" s1:regex{[^']*} "')/GetAction"=> s1;
+syntax SendStatusReportSyntax = "Nodes(ConfigurationId='" s1:regex{[^']*} "')/SendStatusReport"=> s1;
+syntax GetStatusReportSyntax = "Nodes(ConfigurationId='" s1:regex{[^']*} "')/Reports" s2:("(JobId='" s21:regex{[^']*} "')" => s21)?
+    => new DSCPMContract.GetStatusReportRequest
+    {
+        ConfigurationId = s1,
+        JobId = (s2.Count == 0 ? nothing : s2[0]),
+    };
+
+syntax ModuleNameSyntax = s1:regex{[A-Za-z0-9_]+} => s1;
+syntax ModuleVersionSyntax = s1:regex{[0-9]+(\.[0-9]+){1,3}} => s1;
+
+// RFC 4122
+syntax UUID                     = s1:TimeLow s2:"-" s3:TimeMid s4:"-" s5:TimeHighAndVersion s6:"-" s7:ClockSeqAndReserved s8:ClockSeqLow s9:"-" s10:Node => (s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s9 + s10);
+syntax TimeLow                  = regex{[A-Fa-f0-9]{8}};
+syntax TimeMid                  = regex{[A-Fa-f0-9]{4}};
+syntax TimeHighAndVersion       = regex{[A-Fa-f0-9]{4}};
+syntax ClockSeqAndReserved      = regex{[A-Fa-f0-9]{2}};
+syntax ClockSeqLow              = regex{[A-Fa-f0-9]{2}};
+syntax Node                     = regex{[A-Fa-f0-9]{12}};
+
+pattern StatusCodeType = enum uint
+{
+    OK = 200,
+    BAD_REQUEST = 400,
+    NOT_FOUND = 404,
+    ...
+};
+
+pattern GetActionValueType = enum string
+{
+    GetConfiguration    = "GetConfiguration",
+    Retry               = "Retry",
+    Ok                  = "Ok",
+    ...
+};
+
+pattern MsgType = enum byte
+{
+    GetConfigurationRequest = 0,
+    GetConfigurationResponse = 1,
+    GetModuleRequest = 2,
+    GetModuleResponse = 3,
+    GetActionRequest = 4,
+    GetActionResponse = 5,
+    SendStatusReportRequest = 6,
+    SendStatusReportResponse = 7,
+    GetStatusReportRequest = 8,
+    GetStatusReportResponse = 9,
+    ...
+};

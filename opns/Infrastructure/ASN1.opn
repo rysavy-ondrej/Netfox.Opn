@@ -1,0 +1,260 @@
+module ASN1 with
+Documentation
+{
+    ProtocolName = "Abstract Syntax Notation One",
+    ShortName = "ASN1",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+        ],
+    RevisionSummary = 
+        [
+            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="09/02/2011"}
+        ]
+};
+
+using Standard;
+
+// Primitive Types
+
+pattern Boolean = bool with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 1,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern Integer = long with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 2,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern BitString = array<bool> with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 3,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern OctetString = ( string | binary ) with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 4,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern Null = any where value == null with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 5,
+    Tagging = Asn1Tagging.Implicit,
+    Flags = Asn1EncodingFlags.IsNull
+    };
+
+pattern ObjectIdentifier = array<int> with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 6,
+    Tagging = Asn1Tagging.Implicit,
+    Flags = Asn1EncodingFlags.IntArrayIsOid
+    };
+
+pattern Real = double with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 9,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern RelativeOid = array<int> with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 13,
+    Tagging = Asn1Tagging.Implicit,
+    Flags = Asn1EncodingFlags.IntArrayIsRelativeOid
+    };
+
+pattern ObjectDescriptor = GraphicString with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 7,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+// Un-restricted Character String
+
+type CharacterStringIdentificationSyntaxes
+{
+    ObjectIdentifier Abstract;
+    ObjectIdentifier Transfer;
+} with Asn1Encoding { TagNumber = 0};
+
+pattern CharacterStringIdentificationSyntax
+    = ObjectIdentifier with Asn1Encoding {
+        TagNumber = 1,
+        Tagging = Asn1Tagging.Implicit };
+
+pattern CharacterStringIdentificationPresentationContextId
+    = Integer with Asn1Encoding {
+        TagNumber = 2,
+        Tagging = Asn1Tagging.Implicit };
+
+type CharacterStringIdentificationContextNegotiation
+{
+    Integer PresentationContextId;
+    ObjectIdentifier TransferSyntax;
+} with Asn1Encoding { TagNumber = 3};
+ 
+pattern CharacterStringIdentificationTransferSyntax
+    = ObjectIdentifier with Asn1Encoding {
+        TagNumber = 4,
+        Tagging = Asn1Tagging.Implicit };
+ 
+pattern CharacterStringIdentificationFixed
+    = Null with Asn1Encoding {
+        TagNumber = 5,
+        Tagging = Asn1Tagging.Implicit };
+
+type CharacterString
+{
+    ( CharacterStringIdentificationSyntaxes
+    | CharacterStringIdentificationSyntax
+    | CharacterStringIdentificationPresentationContextId
+    | CharacterStringIdentificationContextNegotiation
+    | CharacterStringIdentificationTransferSyntax
+    | CharacterStringIdentificationFixed ) Identification;
+    optional ObjectDescriptor DataValueDescriptor;
+    OctetString StringValue;
+}
+
+// Restricted Character String
+// Note: Temporarily  declared as OctetString, later need to
+// deal with each of the restricted character set separately
+
+pattern UTF8String = string with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 12,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern NumericString = string with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 18,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern PrintableString = string with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 19,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern TeletexString = OctetString with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 20,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern T61String = OctetString with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 20,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern VideotexString = OctetString with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 21,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern IA5String = OctetString with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 22,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern GraphicString = OctetString with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 25,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern VisibleString  = string with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 26,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern ISO646String  = string with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 26,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern GeneralString = OctetString with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 27,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern UniversalString = OctetString with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 28,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern BMPString = OctetString with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 30,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+// Time
+pattern UTCTime = DateTime with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 23,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+pattern GeneralizedTime = DateTime with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 24,
+    Tagging = Asn1Tagging.Implicit
+    };
+
+// External
+pattern SingleAsn1Type = any with Asn1Encoding { Tagging = Asn1Tagging.Implicit, TagNumber = 0 };
+pattern OctetAligned = OctetString with Asn1Encoding { Tagging = Asn1Tagging.Implicit, TagNumber = 1 };
+pattern Arbitrary = BitString with Asn1Encoding { Tagging = Asn1Tagging.Implicit, TagNumber = 2 };
+
+type External
+{
+    optional ObjectIdentifier DirectReference;
+    optional Integer IndirectReference;
+    optional ObjectDescriptor DataValueDescriptor;
+    (SingleAsn1Type | OctetAligned | Arbitrary) Encoding;
+} with Asn1Encoding {
+    Tagging = Asn1Tagging.Implicit,
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 8
+    };
+
+
+/*
+// Future Reference
+// Instance Of type
+
+type InstanceOf<T>
+{
+    T&id TypeId;
+    T&Type Value with Asn1Encoding { TagNumber = 0 };
+} with Asn1Encoding {
+    TagClass = Asn1TagClass.Universal,
+    TagNumber = 8
+    }; 
+*/
+
+
+
+
+
+
+
+

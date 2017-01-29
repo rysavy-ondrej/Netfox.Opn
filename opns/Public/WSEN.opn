@@ -1,0 +1,851 @@
+protocol WSEN with 
+XmlEncodingDefaults{Namespace = WSEnumerateNamespace},
+Documentation
+{
+    ProtocolName = "Web Service Enumeration",
+    ShortName = "WSEN",
+    Description = "WS-Enumeration is a simple SOAP-based protocol for enumeration that allows the data source to provide a session abstraction, called an enumeration context, to a consumer that represents a logical cursor through a sequence of data items.  The consumer can then request XML element information items using this enumeration context over the span of one or more SOAP messages."
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "WSEN", Link = "http://www.w3.org/Submission/WS-Enumeration/"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="09/02/2011"}
+        ]
+};
+    
+using SOAP;
+using Standard;
+using XSD;
+using WSA2004;
+using Technologies.WSDL;
+using Technologies.SOAP;
+using Utility;
+
+// Endpoint: Server
+endpoint Server 
+    over IntermediateServer
+    provides DataSource;// with WebServiceBinding{};
+    
+client endpoint Client connected to Server;
+
+// Endpoint: IntermediateServer
+endpoint IntermediateServer 
+    over SOAP.Server  
+    provides MessageContract;// with WebServiceBinding{};
+client endpoint IntermediateClient connected to IntermediateServer;
+
+autostart actor OperationActor(IntermediateServer node)
+{
+    MessageContract.Enumerate enumerate = null;
+    MessageContract.Pull pull = null;
+    MessageContract.Renew renew = null;
+    MessageContract.GetStatus getStatus = null;
+    MessageContract.Release @release = null;
+    
+    //Enumerate request
+    process node accepts req:MessageContract.Enumerate
+    {
+        if (enumerate == null)
+        {
+            enumerate = req;
+        }
+        else
+        {
+            ValidationCheck(false, enumerate, "WSEN: Incomplete Enumerate operation due to missing Enumerate response.");
+            DisplayTopLevelMessage(enumerate);
+            enumerate = req;
+        }
+    }
+    
+    // Enumerate response
+    process node issues res:MessageContract.EnumerateResponse
+    {
+        if (enumerate == null)
+        {
+            ValidationCheck(false, res, "WSEN: Incomplete Enumerate operation due to missing Enumerate request.");
+            reject;
+        }
+        else
+        {
+            var enumerateOp = new DataSource.EnumerateOp
+            {
+                EndTo = enumerate.Enumerate.EndTo,
+                Expires = enumerate.Enumerate.Expires,
+                Filter = enumerate.Enumerate.Filter,
+                AnyElement = enumerate.Enumerate.AnyElement,
+                AnyAttribute = enumerate.Enumerate.AnyAttribute,
+                Expires2 = res.EnumerateResponse.Expires,
+                EnumerationContext = res.EnumerateResponse.EnumerationContext,
+                AnyElement2 = res.EnumerateResponse.AnyElement,
+                AnyAttribute2 = res.EnumerateResponse.AnyAttribute
+            };
+            enumerateOp.Origins = [enumerate as any message, res as any message];
+            enumerate = null;
+            dispatch (endpoint Server over node) accepts enumerateOp;
+        }
+    }
+    
+    // Pull request
+    process node accepts req:MessageContract.Pull
+    {
+        if (pull == null)
+        {
+            pull = req;
+        }
+        else
+        {
+            ValidationCheck(false, pull, "WSEN: Incomplete Pull operation due to missing Pull response.");
+            DisplayTopLevelMessage(pull);
+            pull = req;
+        }
+    }
+    
+    // Pull response
+    process node issues res:MessageContract.PullResponse
+    {
+        if (pull == null)
+        {
+            ValidationCheck(false, res, "WSEN: Incomplete Pull operation due to missing Pull request.");
+            reject;
+        }
+        else
+        {
+            var pullOp = new DataSource.PullOp
+            {
+                EnumerationContext = pull.Pull.EnumerationContext,
+                MaxTime = pull.Pull.MaxTime,
+                MaxElements = pull.Pull.MaxElements,
+                MaxCharacters = pull.Pull.MaxCharacters,
+                AnyElement = pull.Pull.AnyElement,
+                AnyAttribute = pull.Pull.AnyAttribute,
+                EnumerationContext2 = res.PullResponse.EnumerationContext,
+                Items = res.PullResponse.Items,
+                EndOfSequence = res.PullResponse.EndOfSequence,
+                AnyAttribute2 = res.PullResponse.AnyAttribute
+            };
+            pullOp.Origins = [pull as any message, res as any message];
+            pull = null;
+            dispatch (endpoint Server over node) accepts pullOp;
+        }
+    }
+    
+    // Renew request
+    process node accepts req:MessageContract.Renew
+    {
+        if (renew == null)
+        {
+            renew = req;
+        }
+        else
+        {
+            ValidationCheck(false, renew, "WSEN: Incomplete Renew operation due to missing Renew response.");
+            DisplayTopLevelMessage(renew);
+            renew = req;
+        }
+    }  
+
+    // Renew response
+    process node issues res:MessageContract.RenewResponse
+    {
+        if (renew == null)
+        {
+            ValidationCheck(false, res, "WSEN: Incomplete Renew operation due to missing Renew request.");
+            reject;
+        }
+        else
+        {
+            var renewOp = new DataSource.RenewOp
+            {
+                EnumerationContext = renew.Renew.EnumerationContext,
+                Expires = renew.Renew.Expires,
+                AnyElement = renew.Renew.AnyElement,
+                AnyAttribute = renew.Renew.AnyAttribute,
+                Expires2 = res.RenewResponse.Expires,
+                EnumerationContext2 = res.RenewResponse.EnumerationContext,
+                AnyElement2 = res.RenewResponse.AnyElement,
+                AnyAttribute2 = res.RenewResponse.AnyAttribute
+            };
+            renewOp.Origins = [renew as any message, res as any message];
+            renew = null;
+            dispatch (endpoint Server over node) accepts renewOp;
+        }
+    }
+    
+    // GetStatus request
+    process node accepts req:MessageContract.GetStatus
+    {
+        if (getStatus == null)
+        {
+            getStatus = req;
+        }
+        else
+        {
+            ValidationCheck(false, getStatus, "WSEN: Incomplete GetStatus operation due to missing GetStatus response.");
+            DisplayTopLevelMessage(getStatus);
+            getStatus = req;
+        }
+    }  
+
+    // GetStatus response
+    process node issues res:MessageContract.GetStatusResponse
+    {
+        if (getStatus == null)
+        {
+            ValidationCheck(false, res, "WSEN: Incomplete GetStatus operation due to missing GetStatus request.");
+            reject;
+        }
+        else
+        {
+            var getStatusOp = new DataSource.GetStatusOp
+            {
+                EnumerationContext = getStatus.GetStatus.EnumerationContext,
+                AnyElement = getStatus.GetStatus.AnyElement,
+                AnyAttribute = getStatus.GetStatus.AnyAttribute,
+                Expires = res.GetStatusResponse.Expires,
+                AnyElement2 = res.GetStatusResponse.AnyElement,
+                AnyAttribute2 = res.GetStatusResponse.AnyAttribute
+            };
+            getStatusOp.Origins = [getStatus as any message, res as any message];
+            getStatus = null;
+            dispatch (endpoint Server over node) accepts getStatusOp;
+        }
+    }
+    
+    // Release request
+    process node accepts req:MessageContract.Release
+    {
+        if (@release == null)
+        {
+            @release = req;
+        }
+        else
+        {
+            ValidationCheck(false, @release, "WSEN: The release operation is incomplete due to missing Release response message.");
+            DisplayTopLevelMessage(@release);
+            @release = req;
+        }
+    }
+
+    // Release response
+    process node issues res:MessageContract.ReleaseResponse
+    {
+        if (@release == null)
+        {
+            ValidationCheck(false, res, "WSEN: Incomplete Release operation due to missing Release request.");
+            reject;
+        }
+        else
+        {
+            var releaseOp = new DataSource.ReleaseOp
+            {
+                EnumerationContext = @release.Release.EnumerationContext,
+                AnyAttribute = @release.Release.AnyAttribute
+            };
+            releaseOp.Origins = [@release as any message, res as any message];
+            @release = null;
+            dispatch (endpoint Server over node) accepts releaseOp;
+        }
+    }
+    
+    // Send EnumerationEnd
+    process node issues res:MessageContract.EnumerationEnd
+    {
+        var enumerationEndOp = new DataSource.EnumerationEndOp
+        {
+            EnumerationContext = res.EnumerationEnd.EnumerationContext,
+            Code = res.EnumerationEnd.Code,
+            Reason = res.EnumerationEnd.Reason,
+            AnyElement = res.EnumerationEnd.AnyElement,
+            AnyAttribute = res.EnumerationEnd.AnyAttribute
+        };
+        enumerationEndOp.Origins = [@release as any message, res as any message];
+        @release = null;
+        dispatch (endpoint Server over node) accepts enumerationEndOp;
+    }
+    
+    // destructor
+    ~endpoint(IntermediateServer node)
+    {
+        // WORKAROUND: "release" cannot be used for now. Just dispatch un-processed requests here and raise validation check error
+		if (enumerate != null)
+		{            
+            ValidationCheck(false, enumerate, "WSEN: Incomplete Enumerate operation due to missing Enumerate response.");
+            DisplayTopLevelMessage(enumerate);
+		}
+        if (pull != null)
+        {
+            ValidationCheck(false, pull, "WSEN: Incomplete Pull operation due to missing Pull response.");
+            DisplayTopLevelMessage(pull);
+        }
+        if (renew != null)
+        {
+            ValidationCheck(false, renew, "WSEN: Incomplete Renew operation due to missing Renew response.");
+            DisplayTopLevelMessage(renew);
+        }
+        if (getStatus != null)
+        {
+            ValidationCheck(false, getStatus, "WSEN: Incomplete GetStatus operation due to missing GetStatus response.");
+            DisplayTopLevelMessage(getStatus);
+        }
+        if (@release != null)
+        {
+            ValidationCheck(false, @release, "WSEN: The release operation is incomplete due to missing Release response message.");
+            DisplayTopLevelMessage(@release);
+        }
+    }
+}    
+
+// Actor: WSENParser
+autostart actor WSENOverSOAP(SOAP.Server node)
+{
+    MessageContract.Release @release = null;
+
+    //Enumerate request
+    process node accepts soap:SOAP.SoapMessage where soap.Action == WSEnumerationEnumerateAction
+    {
+        switch (soap.Body)
+        {
+            case m:MessageContract.Enumerate from XmlDecoder<MessageContract.Enumerate> =>
+                dispatch (endpoint IntermediateServer over node) accepts m;
+            default =>
+                ThrowDecodingException("WSEN", "Enumerate");
+        }
+    }
+    
+    // Enumerate response
+    process node issues soap:SOAP.SoapMessage where soap.Action == WSEnumerationEnumerateResponseAction
+    {
+        switch (soap.Body)
+        {
+            case m:MessageContract.EnumerateResponse from XmlDecoder<MessageContract.EnumerateResponse> =>
+                dispatch (endpoint IntermediateServer over node) issues m;
+            default =>
+                ThrowDecodingException("WSEN", "EnumerateResponse");
+        }    
+    }
+    
+     // Pull request
+    process node accepts soap:SOAP.SoapMessage where soap.Action == WSEnumerationPullAction
+    {
+        switch (soap.Body)
+        {
+            case m:MessageContract.Pull from XmlDecoder<MessageContract.Pull> =>
+                dispatch (endpoint IntermediateServer over node) accepts m;
+            default =>
+                ThrowDecodingException("WSEN", "Pull");
+        }    
+    }   
+    
+    // Pull response
+    process node issues soap:SOAP.SoapMessage where soap.Action == WSEnumerationPullResponseAction
+    {
+        switch (soap.Body)
+        {
+            case m:MessageContract.PullResponse from XmlDecoder<MessageContract.PullResponse> =>
+                dispatch (endpoint IntermediateServer over node) issues m;
+            default =>
+                ThrowDecodingException("WSEN", "PullResponse");
+        }
+    }
+    
+    // Renew request
+    process node accepts soap:SOAP.SoapMessage where soap.Action == WSEnumerationRenewAction
+    {
+        switch (soap.Body)
+        {
+            case m:MessageContract.Renew from XmlDecoder<MessageContract.Renew> =>
+                dispatch (endpoint IntermediateServer over node) accepts m;
+            default =>
+                ThrowDecodingException("WSEN", "Renew");
+        }    
+    }       
+
+    // Renew response
+    process node issues soap:SOAP.SoapMessage where soap.Action == WSEnumerationRenewResponseAction
+    {
+        switch (soap.Body)
+        {
+            case m:MessageContract.RenewResponse from XmlDecoder<MessageContract.RenewResponse> =>
+                dispatch (endpoint IntermediateServer over node) issues m;
+            default =>
+                ThrowDecodingException("WSEN", "RenewResponse");
+        }    
+    }
+    
+    // GetStatus request
+    process node accepts soap:SOAP.SoapMessage where soap.Action == WSEnumerationGetstatusAction
+    {
+        switch (soap.Body)
+        {
+            case m:MessageContract.GetStatus from XmlDecoder<MessageContract.GetStatus> =>
+                dispatch (endpoint IntermediateServer over node) accepts m;
+            default =>
+                ThrowDecodingException("WSEN", "GetStatus");
+        }    
+    }       
+
+    // GetStatus response
+    process node issues soap:SOAP.SoapMessage where soap.Action == WSEnumerationGetstatusResponseAction
+    {
+        switch (soap.Body)
+        {
+            case m:MessageContract.GetStatusResponse from XmlDecoder<MessageContract.GetStatusResponse> =>
+                dispatch (endpoint IntermediateServer over node) issues m;
+            default =>
+                ThrowDecodingException("WSEN", "GetStatusResponse");
+        }    
+    }
+    
+    // Release request
+    process node accepts soap:SOAP.SoapMessage where soap.Action == WSEnumerationReleaseAction
+    {
+        switch (soap.Body)
+        {
+            case m:MessageContract.Release from XmlDecoder<MessageContract.Release> =>
+                @release = m;
+                dispatch (endpoint IntermediateServer over node) accepts m;
+            default =>
+                ThrowDecodingException("WSEN", "Release");
+        }    
+    }       
+
+    // Release response
+    process node issues soap:SOAP.SoapMessage where soap.Action == WSEnumerationReleaseResponseAction
+    {
+        if (@release != null)
+        {
+            MessageContract.ReleaseResponse m = new MessageContract.ReleaseResponse{};
+            dispatch (endpoint IntermediateServer over node) issues m;
+            @release = null;
+        }
+    }
+    
+    // Send EnumerationEnd
+    process node issues soap:SOAP.SoapMessage where soap.Action == WSEnumerationEnumerationendAction
+    {
+        switch (soap.Body)
+        {
+            case m:MessageContract.EnumerationEnd from XmlDecoder<MessageContract.EnumerationEnd> =>
+                dispatch (endpoint IntermediateServer over node) issues m;
+            default =>
+                ThrowDecodingException("WSEN", "EnumerationEnd");
+        }    
+    }
+}
+
+// Contract: DataSource
+// Description: 
+contract DataSource
+{
+    accepts operation EnumerateOp
+    {
+        in optional EndpointReferenceType EndTo;
+        in optional ExpirationType Expires;
+        in optional FilterType Filter;
+        in optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+        in optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+        
+        out optional ExpirationType Expires2;
+        out EnumerationContextType EnumerationContext;
+        out optional array<xml> AnyElement2 with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+        out optional array<xml> AnyAttribute2 with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+        
+        override string ToString()
+        {
+            return "EnumerateOp" + this.ExtendingSummary;
+        }
+    } with SoapMessageInfo{
+                Action = WSEnumerationEnumerateAction,
+                ReplyAction = WSEnumerationEnumerateResponseAction}; 
+    
+    accepts operation PullOp
+    {
+        in EnumerationContextType EnumerationContext;
+        in optional PositiveDurationType MaxTime;
+        in optional XSpositiveInteger MaxElements;
+        in optional XSpositiveInteger MaxCharacters;
+        in optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Any};
+        in optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Any};
+    
+        out optional EnumerationContextType EnumerationContext2;
+        out optional ItemListType Items;
+        out optional xml EndOfSequence;
+        out optional array<xml> AnyAttribute2 with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+        
+        override string ToString()
+        {
+            return "PullOp" + this.ExtendingSummary;
+        }
+    } with SoapMessageInfo{
+                Action = WSEnumerationPullAction,
+                ReplyAction = WSEnumerationPullResponseAction};
+    
+    accepts operation RenewOp
+    {
+        in EnumerationContextType EnumerationContext;
+        in optional ExpirationType Expires;
+        in optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+        in optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+    
+        out optional ExpirationType Expires2;
+        out optional EnumerationContextType EnumerationContext2;
+        out optional array<xml> AnyElement2 with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+        out optional array<xml> AnyAttribute2 with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+        
+        override string ToString()
+        {
+            return "RenewOp" + this.ExtendingSummary;
+        }
+    } with SoapMessageInfo{
+        Action = WSEnumerationRenewAction,
+        ReplyAction = WSEnumerationRenewResponseAction};
+    
+    accepts operation GetStatusOp
+    {
+        in EnumerationContextType EnumerationContext;
+        in optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+        in optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+    
+        out optional ExpirationType Expires;
+        out optional array<xml> AnyElement2 with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+        out optional array<xml> AnyAttribute2 with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other}; 
+        
+        override string ToString()
+        {
+            return "GetStatusOp" + this.ExtendingSummary;
+        }
+    } with SoapMessageInfo{
+                Action = WSEnumerationGetstatusAction,
+                ReplyAction = WSEnumerationGetstatusResponseAction};
+    
+    accepts operation ReleaseOp
+    {
+        in EnumerationContextType EnumerationContext;
+        in optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+        
+        override string ToString()
+        {
+            return "ReleaseOp" + this.ExtendingSummary;
+        }
+    } with SoapMessageInfo{
+                Action = WSEnumerationReleaseAction,
+                ReplyAction = WSEnumerationReleaseResponseAction};
+
+    accepts operation EnumerationEndOp
+    {
+        out EnumerationContextType EnumerationContext;
+        out OpenEnumerationEndCodeType Code;
+        out optional array<LanguageSpecificStringType> Reason;
+        out optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+        out optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+        
+        override string ToString()
+        {
+            return "EnumerationEndOp" + this.ExtendingSummary;
+        }
+    } with SoapMessageInfo{
+                ReplyAction = WSEnumerationEnumerationendAction};
+}
+
+//Types and global elements
+// Future Reference: mixed = true
+type FilterType
+{
+    XSAnyURI Dialect with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true ,Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute,Namespace = XmlNamespaceIndicator.Other};
+}
+
+pattern PositiveDurationType = XSDuration where ValidationCheck(value >= "P0Y0M0DT0H0M0S", null, "WSEN: PositiveDurationType must be not less than P0Y0M0DT0H0M0S.");     // Future Reference: Use syntax or a certain method to do ValidationCheck
+
+pattern NonNegativeDurationType = XSDuration where ValidationCheck(value >= "P0Y0M0DT0H0M0S", null, "WSEN: NonNegativeDurationType must be not less than P0Y0M0DT0H0M0S.");
+
+pattern ExpirationType = NonNegativeDurationType | XSDatatime;
+
+// Future Reference: mixed = true
+type EnumerationContextType
+{
+    optional string Text with XmlEncoding{Kind = XmlKind.Text};
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+} 
+
+type ItemListType
+{
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+}
+
+type FileType
+{
+    string name with XmlEncoding{Name = "name", Kind = XmlKind.Attribute, Namespace = ""};
+    string size with XmlEncoding{Name = "size", Kind = XmlKind.Attribute, Namespace = ""};
+} 
+
+type LanguageSpecificStringType
+{
+    string Base with XmlEncoding{Kind = XmlKind.Text};
+    XSLanguage Language with XmlEncoding{Kind = XmlKind.Attribute};
+    xml AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute,Namespace = XmlNamespaceIndicator.Other};
+}
+
+contract MessageContract
+    with XmlEncodingDefaults{Namespace = ""}
+{
+    // Enumerate request
+    accepts message Enumerate
+    {
+        EnumerateType Enumerate with XmlEncoding{Name = "Enumerate", Namespace = WSEnumerateNamespace};
+        override string ToString()
+        {
+            return "EnumerateRequest" + this.ExtendingSummary
+            + (this.Enumerate.Expires == nothing ? "" : ", Expires: " + (this.Enumerate.Expires as string));
+        }
+    }
+
+    // Enumerate response
+    issues message EnumerateResponse
+    {
+        EnumerateResponseType EnumerateResponse with XmlEncoding{Name = "EnumerateResponse", Namespace = WSEnumerateNamespace};
+        override string ToString()
+        {
+            return "EnumerateResponse" + this.ExtendingSummary 
+            + (this.EnumerateResponse.Expires == nothing ? "" : ", Expires: " + (this.EnumerateResponse.Expires as string));
+        }
+    } with XmlEncoding{AnonymousType = true};
+
+    // Pull request   
+    accepts message Pull
+    {
+        PullType Pull with XmlEncoding{Name = "Pull", Namespace = WSEnumerateNamespace};
+        override string ToString()
+        {
+            return "PullRequest" + this.ExtendingSummary 
+            + (this.Pull.MaxTime == nothing ? "" : ", MaxTime: " + (this.Pull.MaxTime as string))
+            + (this.Pull.MaxElements == nothing ? "" : ", MaxElements: " + (this.Pull.MaxElements as string))
+            + (this.Pull.MaxCharacters == nothing ? "" : ", MaxCharacters: " + (this.Pull.MaxCharacters as string));
+        }
+    } with XmlEncoding{AnonymousType = true}; 
+
+    // Pull response
+    issues message PullResponse
+    {
+        PullResponseType PullResponse with XmlEncoding{Name = "PullResponse", Namespace = WSEnumerateNamespace};
+        override string ToString()
+        {
+            return "PullResponse" + this.ExtendingSummary
+            + (this.PullResponse.EndOfSequence == nothing ? "" : ", EndOfSequence: " + (this.PullResponse.EndOfSequence as string));
+        }
+    } with XmlEncoding{AnonymousType = true};      
+
+    // Renew request
+    accepts message Renew
+    {
+        RenewType Renew with XmlEncoding{Name = "Renew", Namespace = WSEnumerateNamespace};
+        override string ToString()
+        {
+            return "RenewRequest" + this.ExtendingSummary 
+            + (this.Renew.Expires == nothing ? "" : ", Expires: " + (this.Renew.Expires as string));
+        }
+    } with XmlEncoding{AnonymousType = true};
+
+    // Renew responese
+    issues message RenewResponse
+    {
+        RenewResponseType RenewResponse with XmlEncoding{Name = "RenewResponse", Namespace = WSEnumerateNamespace};
+        override string ToString()
+        {
+            return "RenewResponse" + this.ExtendingSummary
+            + (this.RenewResponse.Expires == nothing ? "" : ", Expires: " + (this.RenewResponse.Expires as string));
+        }
+    } with XmlEncoding{AnonymousType = true};
+
+    // GetStatus request
+    accepts message GetStatus
+    {
+        GetStatusType GetStatus with XmlEncoding{Name = "GetStatus", Namespace = WSEnumerateNamespace};
+        override string ToString()
+        {
+            return "GetStatusRequest" + this.ExtendingSummary;
+        }
+    } with XmlEncoding{AnonymousType = true};
+
+    // GetStust response
+    issues message GetStatusResponse
+    {
+        GetStatusResponseType GetStatusResponse with XmlEncoding{Name = "GetStatusResponse", Namespace = WSEnumerateNamespace};
+        override string ToString()
+        {
+            return "GetStatusResponse" + this.ExtendingSummary;
+        }
+    } with XmlEncoding{AnonymousType = true};
+
+    // Release request
+    accepts message Release
+    {
+        ReleaseType Release with XmlEncoding{Name = "Release", Namespace = WSEnumerateNamespace};
+        override string ToString()
+        {
+            return "ReleaseRequest" + this.ExtendingSummary;
+        }
+    } with XmlEncoding{AnonymousType = true};
+
+    // Release response has an empty body
+    issues message ReleaseResponse
+    {
+        ReleaseResponseType ReleaseResponse with XmlEncoding{Name = "ReleaseResponse", Namespace = WSEnumerateNamespace};
+        override string ToString()
+        {
+            return "ReleaseResponse" + this.ExtendingSummary;
+        }
+    }
+
+    // Enumerationend message
+    issues message EnumerationEnd
+    {
+        EnumerationEndType EnumerationEnd with XmlEncoding{Name = "EnumerationEnd", Namespace = WSEnumerateNamespace};
+        override string ToString()
+        {
+            return "EnumerationEnd" + this.ExtendingSummary
+            + (this.EnumerationEnd.Code == nothing ? "" : ", Code: " + (this.EnumerationEnd.Code as string))
+            + (this.EnumerationEnd.Reason == nothing ? "" : ", Reason: " + (this.EnumerationEnd.Reason as string));
+        }
+    } with XmlEncoding{AnonymousType = true};
+}
+
+// Used for a fault response    
+pattern SupportedDialect = XSAnyURI;   
+
+pattern EnumerationEndCodeType = enum XSAnyURI
+{
+    ShuttingDown = "http://schemas.xmlsoap.org/ws/2004/09/enumeration/SourceShuttingDown",
+    Cancelling = "http://schemas.xmlsoap.org/ws/2004/09/enumeration/SourceCancelling" ,
+};
+
+pattern OpenEnumerationEndCodeType = EnumerationEndCodeType | XSAnyURI;
+
+const string WSEnumerateNamespace = "http://schemas.xmlsoap.org/ws/2004/09/enumeration";
+
+// Enumerate
+const string WSEnumerationEnumerateAction = WSEnumerateNamespace + "/Enumerate";
+const string WSEnumerationEnumerateResponseAction = WSEnumerationEnumerateAction + "Response";
+
+// Pull
+const string WSEnumerationPullAction = WSEnumerateNamespace + "/Pull";
+const string WSEnumerationPullResponseAction = WSEnumerationPullAction + "Response";
+
+// Renew
+const string WSEnumerationRenewAction = WSEnumerateNamespace + "/Renew";
+const string WSEnumerationRenewResponseAction = WSEnumerationRenewAction + "Response";
+
+// GetStatus
+const string WSEnumerationGetstatusAction = WSEnumerateNamespace + "/GetStatus";
+const string WSEnumerationGetstatusResponseAction = WSEnumerationGetstatusAction + "Response";
+ 
+// Release
+const string WSEnumerationReleaseAction = WSEnumerateNamespace + "/Release";
+const string WSEnumerationReleaseResponseAction = WSEnumerationReleaseAction + "Response";
+
+// EnumerateEnd
+const string WSEnumerationEnumerationendAction = WSEnumerateNamespace + "/EnumerationEnd";
+
+// Enumerate request
+type EnumerateType
+{
+     optional EndpointReferenceType EndTo;
+     optional ExpirationType Expires;
+     optional FilterType Filter;
+     optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+     optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+// Enumerate response
+type EnumerateResponseType
+{
+    optional ExpirationType Expires;
+    EnumerationContextType EnumerationContext;
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+} with XmlEncoding{AnonymousType = true};
+
+// Pull request   
+type PullType
+{
+    EnumerationContextType EnumerationContext;
+    optional PositiveDurationType MaxTime;
+    optional XSpositiveInteger MaxElements;
+    optional XSpositiveInteger MaxCharacters;
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Any};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Any};
+} with XmlEncoding{AnonymousType = true}; 
+
+// Pull response
+type PullResponseType
+{
+    optional EnumerationContextType EnumerationContext;
+    optional ItemListType Items;
+    optional xml EndOfSequence;
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+} with XmlEncoding{AnonymousType = true};      
+
+// Renew request
+type RenewType
+{
+    EnumerationContextType EnumerationContext;
+    optional ExpirationType Expires;
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+} with XmlEncoding{AnonymousType = true};
+
+// Renew responese
+type RenewResponseType
+{
+    optional ExpirationType Expires;
+    optional EnumerationContextType EnumerationContext;
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+} with XmlEncoding{AnonymousType = true};
+
+// GetStatus request
+type GetStatusType
+{
+    EnumerationContextType EnumerationContext;
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+} with XmlEncoding{AnonymousType = true};
+
+// GetStust response
+type GetStatusResponseType
+{
+    optional ExpirationType Expires;
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other}; 
+} with XmlEncoding{AnonymousType = true};
+
+// Release request
+type ReleaseType
+{
+    EnumerationContextType EnumerationContext;
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+} with XmlEncoding{AnonymousType = true};
+
+// Release response has an empty body
+type ReleaseResponseType
+{
+    // Empty body.
+}
+
+// Enumerationend message
+type EnumerationEndType
+{
+    EnumerationContextType EnumerationContext;
+    OpenEnumerationEndCodeType Code;
+    optional array<LanguageSpecificStringType> Reason;
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+} with XmlEncoding{AnonymousType = true};

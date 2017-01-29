@@ -1,0 +1,197 @@
+﻿protocol SMBOverTCP with
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "Server Message Block (SMB) Protocol",
+    ShortName = "SMBOverTCP"
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "MS-SMB", Version = "37.0", ProgramName = ProgramName.WSPP},
+        ],
+    RevisionSummary = 
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "24/05/2012"}
+        ]
+};
+
+using Technologies.Block;
+using Standard;
+using Utility;
+using TCP;
+using IANA;
+using VirtualTransport;
+using Reassembly;
+using NamedPipe;
+
+// -------------------------------------------
+// Endpoints
+
+endpoint Server
+    over VirtualTransport.Server
+    accepts TransportPacket issues TransportPacket;
+
+client endpoint Client connected to Server;
+
+type DecodingCache : DecodingCacheBase
+{ 
+    void(TransportPacket) Dispatcher;
+    
+    void TryDecodeAndDispatchTransportPacket()
+    {
+        stream str = Buffer;
+        bool msgDecoded = false;
+        while (str.RemainingLength > 0)
+        {
+            var msg = BinaryDecoder<TransportPacket>(str);
+            if (msg == nothing)
+            {
+                if (msgDecoded)
+                {
+                    /* Reset the Buffer as the decoding failure is caused by insufficient data,
+                     * and waiting for the following data.
+                     */
+                    Reset(str);
+                }
+                else if ((Buffer[0] != 0) && !HasSegmentLost)
+                {
+                    /* The data is invalid as the first byte doesn't match,
+                     * and it's not caused by TCP segment-lost or the data is still insufficient
+                     */
+                    Buffer = $[];
+                    Origins = [];
+                    ThrowDecodingException("SMBOverTCP", "TransportPacket");
+                }
+                else if ((Buffer.Segment(5, 3) != $[534D42] && HasSegmentLost)|| HasIncompleteSegments)
+                {
+                    /* The decoding failed at the first time when trying to decode Buffer,
+                     * which is caused by TCP segment-lost.
+                     */
+                    Clear();
+                }
+                return;
+            }
+            else
+            {
+                var m = msg as TransportPacket;
+                m.Origins = Origins;
+                Dispatcher(m);
+                msgDecoded = true;
+                
+                // if streamProtocolLength is smaller than the minimum length of SMB header and SMB2 header
+                // break the loop and pop-up and error message
+                if(m.StreamProtocolLength < 32)
+                {
+                    ReportInsufficientData(m, DiagnosisLevel.Error, "SMBOverTCP: TransportPacket.SMBMessage, the data is insufficient for this field due to TCP segment-lost.");
+                    break;
+                }
+            }
+        }
+        Buffer = $[];
+        Origins = [];
+    }
+    
+    override void Clear()
+    {
+        if (Buffer != null)
+        {
+            if (Buffer.Count > 4 && Buffer[0] == 0)
+            {
+                // Dispatch the partical message
+                uint streamProtocolLength = Buffer[3] + ((Buffer[2] as uint) << 8) + ((Buffer[1] as uint) << 16);
+                    // WORKAROUND: Bug#31792 - [DCR]BinaryDecoder<T>(binary) should support big-endian or little-endian dynamically assigned in runtime decoding.
+                    //BinaryDecoder<uint>(Buffer.Segment(0, 4));
+                var m = new TransportPacket
+                {
+                    Zero = 0,
+                    StreamProtocolLength = streamProtocolLength,
+                    SMBMessage = Buffer.Segment(4),
+                };
+                m.SourceData = Buffer;
+                m.AssignFieldEncodingInfo("Zero", 0, 8);
+                m.AssignFieldEncodingInfo("StreamProtocolLength", 8, 24);
+                m.AssignFieldEncodingInfo("SMBMessage", 24, m.SMBMessage.Count * 8);
+                ReportInsufficientData(m, DiagnosisLevel.Error, "SMBOverTCP: TransportPacket.SMBMessage, the data is insufficient for this field due to TCP segment-lost.");
+                m.Origins = Origins;
+                Dispatcher(m);
+            }
+            else
+            {
+                foreach (var m in Origins)
+                {
+                    ValidationCheck(false, m, "SMBOverTCP: Failed to decode the TCP.Payload field into SMBOverTCP message due to TCP segment-lost.");
+                    DisplayTopLevelMessage(m);
+                }
+            }
+        }
+        Origins = [];
+        Buffer = $[];
+    }
+}
+
+// -------------------------------------------
+// Actors
+autostart actor SMBOverTCPServer(VirtualTransport.Server server) precedes NamedPipe.NamedPipeOverTCPServer
+{
+    DecodingCache inboundCache = null;
+    DecodingCache outboundCache = null;
+    void AcceptDispatcher(TransportPacket m)
+    {
+        dispatch (endpoint Server over server) accepts m;
+    }
+    
+    void IssueDispatcher(TransportPacket m)
+    {
+        dispatch (endpoint Server over server) issues m;
+    }
+
+    process server accepts s:VirtualTransport.VirtualDataSegment{DestinationPort is Port.SMB}
+    {
+        if (inboundCache == null)
+        {
+            inboundCache = new DecodingCache{ Dispatcher = AcceptDispatcher };
+        }
+        inboundCache.Add(s);
+        inboundCache.TryDecodeAndDispatchTransportPacket();
+    }
+   
+    process server issues s:VirtualTransport.VirtualDataSegment{SourcePort is Port.SMB}
+    {
+        if (outboundCache == null)
+        {
+            outboundCache = new DecodingCache{ Dispatcher = IssueDispatcher };
+        }
+        outboundCache.Add(s);
+        outboundCache.TryDecodeAndDispatchTransportPacket();
+    }
+    
+    ~endpoint(VirtualTransport.Server e)
+    {
+        if (inboundCache != null)
+        {
+            inboundCache.Clear();
+        }
+        if (outboundCache != null)
+        {
+            outboundCache.Clear();
+        }
+    }
+}
+
+// -------------------------------------------
+// Message
+
+message TransportPacket
+{
+    byte Zero where value == 0;
+    uint StreamProtocolLength with BinaryEncoding{Width = 24};
+    binary SMBMessage with BinaryEncoding{Length = StreamProtocolLength};
+    
+    override string ToString()
+    {
+        return "StreamProtocolLength = " + (StreamProtocolLength as string);
+    }
+}

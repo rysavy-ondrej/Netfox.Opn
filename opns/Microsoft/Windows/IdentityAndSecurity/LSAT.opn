@@ -1,0 +1,661 @@
+protocol LSAT with
+Documentation
+{
+    ProtocolName = "Local Security Authority (Translation Methods) Remote Protocol",
+    ProtocolType = "rpc",
+    ShortName = "LSAT",
+    DocumentName = "MS-LSAT",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References =
+    [
+        new Reference{Name = "MS-LSAT", Version = "24.0", ProgramName = ProgramName.WSPP}
+    ],
+    RevisionSummary =
+    [
+        new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/12/2012"}
+    ]
+};
+
+using Technologies.IDL;
+using DTYP;
+using ERREF;
+using MSRPCE;
+using Utility;
+
+endpoint LsarpcService over MSRPCE.Server provides lsarpc;
+
+contract lsarpc
+{
+    accepts operation LsarClose
+    {
+        in out LSAPR_HANDLE ObjectHandle with IDL{IndirectionLevel = 1};
+        result NTSTATUS ReturnValue;
+
+        override string ToString()
+        {
+            return "LsarClose, ReturnValue: " + NtStatusValuesToText(ReturnValue);
+        }
+    }
+    with IDL{Opnum = 0};
+
+    accepts operation Opnum1NotUsedOnWire{} with IDL{Opnum = 1};
+
+    accepts operation Lsar_LSA_DP_2{} with IDL{Opnum = 2};
+
+    accepts operation Lsar_LSA_DP_3{} with IDL{Opnum = 3};
+
+    accepts operation Lsar_LSA_DP_4{} with IDL{Opnum = 4};
+
+    accepts operation Opnum5NotUsedOnWire{} with IDL{Opnum = 5};
+
+    accepts operation LsarOpenPolicy
+    {
+        in wchar_t SystemName with IDL{PointerType = PointerKind.UniquePtr, IndirectionLevel = 1};
+        in PLSAPR_OBJECT_ATTRIBUTES ObjectAttributes;
+        in ULONG DesiredAccess where value is ACCESS_MASK;
+        out LSAPR_HANDLE PolicyHandle with IDL{IndirectionLevel = 1};
+        result NTSTATUS ReturnValue;
+
+        override string ToString()
+        {
+            return "LsarOpenPolicy, ReturnValue: " + NtStatusValuesToText(ReturnValue);
+        }
+    }
+    with IDL{Opnum = 6};
+
+    accepts operation Lsar_LSA_DP_7{} with IDL{Opnum = 7};
+
+    accepts operation Lsar_LSA_DP_8{} with IDL{Opnum = 8};
+
+    accepts operation Opnum9NotUsedOnWire{} with IDL{Opnum = 9};
+
+    accepts operation Lsar_LSA_DP_10{} with IDL{Opnum = 10};
+
+    accepts operation Lsar_LSA_DP_11{} with IDL{Opnum = 11};
+
+    accepts operation Lsar_LSA_DP_12{} with IDL{Opnum = 12};
+
+    accepts operation Lsar_LSA_DP_13{} with IDL{Opnum = 13};
+
+    accepts operation LsarLookupNames
+    {
+        in LSAPR_HANDLE PolicyHandle;
+        in IDLUlong Count with IDL{Range = new RangePattern {Low = 0, High = 1000}};
+        in array<PRPC_UNICODE_STRING> Names with IDL{Size_is = [Count]};
+        out PLSAPR_REFERENCED_DOMAIN_LIST ReferencedDomains with IDL{IndirectionLevel = 1};
+        in out PLSAPR_TRANSLATED_SIDS TranslatedSids;
+        in LSAP_LOOKUP_LEVEL LookupLevel;
+        in out IDLUlong MappedCount with IDL{IndirectionLevel = 1};
+        result NTSTATUS ReturnValue;
+
+        override string ToString()
+        {
+            return "LsarLookupNames, ReturnValue: " + NtStatusValuesToText(ReturnValue) +
+                ", Count: " + (Count as string) +
+                ", MappedCount: " + (MappedCount as string);
+        }
+    }
+    with IDL{Opnum = 14};
+
+    accepts operation LsarLookupSids
+    {
+        in LSAPR_HANDLE PolicyHandle;
+        in PLSAPR_SID_ENUM_BUFFER SidEnumBuffer;
+        out PLSAPR_REFERENCED_DOMAIN_LIST ReferencedDomains with IDL{IndirectionLevel = 1};
+        in out PLSAPR_TRANSLATED_NAMES TranslatedNames;
+        in LSAP_LOOKUP_LEVEL LookupLevel;
+        in out IDLUlong MappedCount with IDL{IndirectionLevel = 1};
+        result NTSTATUS ReturnValue;
+
+        override string ToString()
+        {
+            return "LsarLookupSids, ReturnValue: " + NtStatusValuesToText(ReturnValue) +
+                ", MappedCount: " + (MappedCount as string);
+        }
+    }
+    with IDL{Opnum = 15};
+
+    accepts operation Lsar_LSA_DP_16{} with IDL{Opnum = 16};
+
+    accepts operation Lsar_LSA_DP_17{} with IDL{Opnum = 17};
+
+    accepts operation Lsar_LSA_DP_18{} with IDL{Opnum = 18};
+
+    accepts operation Lsar_LSA_DP_19{} with IDL{Opnum = 19};
+
+    accepts operation Lsar_LSA_DP_20{} with IDL{Opnum = 20};
+
+    accepts operation Opnum21NotUsedOnWire{} with IDL{Opnum = 21};
+
+    accepts operation Opnum22NotUsedOnWire{} with IDL{Opnum = 22};
+
+    accepts operation Lsar_LSA_DP_23{} with IDL{Opnum = 23};
+
+    accepts operation Lsar_LSA_DP_24{} with IDL{Opnum = 24};
+
+    accepts operation Lsar_LSA_DP_25{} with IDL{Opnum = 25};
+
+    accepts operation Lsar_LSA_DP_26{} with IDL{Opnum = 26};
+
+    accepts operation Lsar_LSA_DP_27{} with IDL{Opnum = 27};
+
+    accepts operation Lsar_LSA_DP_28{} with IDL{Opnum = 28};
+
+    accepts operation Lsar_LSA_DP_29{} with IDL{Opnum = 29};
+
+    accepts operation Lsar_LSA_DP_30{} with IDL{Opnum = 30};
+
+    accepts operation Lsar_LSA_DP_31{} with IDL{Opnum = 31};
+
+    accepts operation Lsar_LSA_DP_32{} with IDL{Opnum = 32};
+
+    accepts operation Lsar_LSA_DP_33{} with IDL{Opnum = 33};
+
+    accepts operation Lsar_LSA_DP_34{} with IDL{Opnum = 34};
+
+    accepts operation Lsar_LSA_DP_35{} with IDL{Opnum = 35};
+
+    accepts operation Lsar_LSA_DP_36{} with IDL{Opnum = 36};
+
+    accepts operation Lsar_LSA_DP_37{} with IDL{Opnum = 37};
+
+    accepts operation Lsar_LSA_DP_38{} with IDL{Opnum = 38};
+
+    accepts operation Lsar_LSA_DP_39{} with IDL{Opnum = 39};
+
+    accepts operation Lsar_LSA_DP_40{} with IDL{Opnum = 40};
+
+    accepts operation Lsar_LSA_DP_41{} with IDL{Opnum = 41};
+
+    accepts operation Lsar_LSA_DP_42{} with IDL{Opnum = 42};
+
+    accepts operation Lsar_LSA_DP_43{} with IDL{Opnum = 43};
+
+    accepts operation LsarOpenPolicy2
+    {
+        in string SystemName with IDL{PointerType = PointerKind.UniquePtr, BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+        in PLSAPR_OBJECT_ATTRIBUTES ObjectAttributes;
+        in ULONG DesiredAccess where value is ACCESS_MASK;
+        out LSAPR_HANDLE PolicyHandle with IDL{IndirectionLevel = 1};
+        result NTSTATUS ReturnValue;
+
+        override string ToString()
+        {
+            return "LsarOpenPolicy2, ReturnValue: " + NtStatusValuesToText(ReturnValue);
+        }
+    }
+    with IDL{Opnum = 44};
+
+    accepts operation LsarGetUserName
+    {
+        in string SystemName with IDL{PointerType = PointerKind.UniquePtr, BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+        in out PRPC_UNICODE_STRING UserName with IDL{IndirectionLevel = 1};
+        in out PRPC_UNICODE_STRING DomainName with IDL{PointerType = PointerKind.UniquePtr, IndirectionLevel = 1};
+        result NTSTATUS ReturnValue;
+
+        override string ToString()
+        {
+            return "LsarGetUserName, ReturnValue: " + NtStatusValuesToText(ReturnValue);
+        }
+    }
+    with IDL{Opnum = 45};
+
+    accepts operation Lsar_LSA_DP_46{} with IDL{Opnum = 46};
+
+    accepts operation Lsar_LSA_DP_47{} with IDL{Opnum = 47};
+
+    accepts operation Lsar_LSA_DP_48{} with IDL{Opnum = 48};
+
+    accepts operation Lsar_LSA_DP_49{} with IDL{Opnum = 49};
+
+    accepts operation Lsar_LSA_DP_50{} with IDL{Opnum = 50};
+
+    accepts operation Lsar_LSA_DP_51{} with IDL{Opnum = 51};
+
+    accepts operation Opnum52NotUsedOnWire{} with IDL{Opnum = 52};
+
+    accepts operation Lsar_LSA_DP_53{} with IDL{Opnum = 53};
+
+    accepts operation Lsar_LSA_DP_54{} with IDL{Opnum = 54};
+
+    accepts operation Lsar_LSA_DP_55{} with IDL{Opnum = 55};
+
+    accepts operation Opnum56NotUsedOnWire{} with IDL{Opnum = 56};
+
+    accepts operation LsarLookupSids2
+    {
+        in LSAPR_HANDLE PolicyHandle;
+        in PLSAPR_SID_ENUM_BUFFER SidEnumBuffer;
+        out PLSAPR_REFERENCED_DOMAIN_LIST ReferencedDomains with IDL{IndirectionLevel = 1};
+        in out PLSAPR_TRANSLATED_NAMES_EX TranslatedNames;
+        in LSAP_LOOKUP_LEVEL LookupLevel;
+        in out IDLUlong MappedCount with IDL{IndirectionLevel = 1};
+        in IDLUlong LookupOptions where ValidationCheck(value == 0, this, DiagnosisLevel.Error, 
+            "LSAT: LookupOptions is reserved for future use and should be set to zero.");
+        in IDLUlong ClientRevision;
+        result NTSTATUS ReturnValue;
+
+        override string ToString()
+        {
+            return "LsarLookupSids2, ReturnValue: " + NtStatusValuesToText(ReturnValue) + 
+                ", ClientRevision: " + (ClientRevision as string);
+        }
+    }
+    with IDL{Opnum = 57};
+
+    accepts operation LsarLookupNames2
+    {
+        in LSAPR_HANDLE PolicyHandle;
+        in IDLUlong Count with IDL{Range = new RangePattern {Low = 0, High = 1000}};
+        in array<PRPC_UNICODE_STRING> Names with IDL{Size_is = [Count]};
+        out PLSAPR_REFERENCED_DOMAIN_LIST ReferencedDomains with IDL{IndirectionLevel = 1};
+        in out PLSAPR_TRANSLATED_SIDS_EX TranslatedSids;
+        in LSAP_LOOKUP_LEVEL LookupLevel;
+        in out IDLUlong MappedCount with IDL{IndirectionLevel = 1};
+        in IDLUlong LookupOptions where ValidationCheck(value is LookupOptionsRestriction, this, DiagnosisLevel.Error, 
+            "LSAT: Flags specified by the caller that control the lookup operation. The value must be 0x00000000 or 0x80000000, not " + value.ToString() + ".");
+        in IDLUlong ClientRevision;
+        result NTSTATUS ReturnValue;
+
+        override string ToString()
+        {
+            return "LsarLookupNames2, ReturnValue: " + NtStatusValuesToText(ReturnValue) + 
+                ", LookupOptions: " + (LookupOptions as string) +
+                ", ClientRevision: " + (ClientRevision as string);
+        }
+    }
+    with IDL{Opnum = 58};
+
+    accepts operation Lsar_LSA_DP_59{} with IDL{Opnum = 59};
+
+    accepts operation Opnum60NotUsedOnWire{} with IDL{Opnum = 60};
+
+    accepts operation Opnum61NotUsedOnWire{} with IDL{Opnum = 61};
+
+    accepts operation Opnum62NotUsedOnWire{} with IDL{Opnum = 62};
+
+    accepts operation Opnum63NotUsedOnWire{} with IDL{Opnum = 63};
+
+    accepts operation Opnum64NotUsedOnWire{} with IDL{Opnum = 64};
+
+    accepts operation Opnum65NotUsedOnWire{} with IDL{Opnum = 65};
+
+    accepts operation Opnum66NotUsedOnWire{} with IDL{Opnum = 66};
+
+    accepts operation Opnum67NotUsedOnWire{} with IDL{Opnum = 67};
+
+    accepts operation LsarLookupNames3
+    {
+        in LSAPR_HANDLE PolicyHandle;
+        in IDLUlong Count with IDL{Range = new RangePattern {Low = 0, High = 1000}};
+        in array<PRPC_UNICODE_STRING> Names with IDL{Size_is = [Count]};
+        out PLSAPR_REFERENCED_DOMAIN_LIST ReferencedDomains with IDL{IndirectionLevel = 1};
+        in out PLSAPR_TRANSLATED_SIDS_EX2 TranslatedSids;
+        in LSAP_LOOKUP_LEVEL LookupLevel;
+        in out IDLUlong MappedCount with IDL{IndirectionLevel = 1};
+        in IDLUlong LookupOptions where ValidationCheck(value is LookupOptionsRestriction, this, DiagnosisLevel.Error, 
+            "LSAT: Flags specified by the caller that control the lookup operation. The value must be 0x00000000 or 0x80000000, not " + value.ToString() + ".");
+        in IDLUlong ClientRevision;
+        result NTSTATUS ReturnValue;
+
+        override string ToString()
+        {
+            return "LsarLookupNames3, ReturnValue: " + NtStatusValuesToText(ReturnValue) +
+                ", LookupOptions: " + (LookupOptions as string) +
+                ", ClientRevision: " + (ClientRevision as string);
+        }
+    }
+    with IDL{Opnum = 68};
+
+    accepts operation Opnum69NotUsedOnWire{} with IDL{Opnum = 69};
+
+    accepts operation Opnum70NotUsedOnWire{} with IDL{Opnum = 70};
+
+    accepts operation Opnum71NotUsedOnWire{} with IDL{Opnum = 71};
+
+    accepts operation Opnum72NotUsedOnWire{} with IDL{Opnum = 72};
+
+    accepts operation Lsar_LSA_DP_73{} with IDL{Opnum = 73};
+
+    accepts operation Lsar_LSA_DP_74{} with IDL{Opnum = 74};
+
+    accepts operation Opnum75NotUsedOnWire{} with IDL{Opnum = 75};
+
+    accepts operation LsarLookupSids3
+    {
+        in (optional handle_t) RpcHandle;
+        in PLSAPR_SID_ENUM_BUFFER SidEnumBuffer;
+        out PLSAPR_REFERENCED_DOMAIN_LIST ReferencedDomains with IDL{IndirectionLevel = 1};
+        in out PLSAPR_TRANSLATED_NAMES_EX TranslatedNames;
+        in LSAP_LOOKUP_LEVEL LookupLevel;
+        in out IDLUlong MappedCount with IDL{IndirectionLevel = 1};
+        in IDLUlong LookupOptions;
+        in IDLUlong ClientRevision;
+        result NTSTATUS ReturnValue;
+
+        override string ToString()
+        {
+            return "LsarLookupSids3, ReturnValue: " + NtStatusValuesToText(ReturnValue);
+        }
+    }
+    with IDL{Opnum = 76};
+
+    accepts operation LsarLookupNames4
+    {
+        in (optional handle_t) RpcHandle;
+        in IDLUlong Count with IDL{Range = new RangePattern {Low = 0, High = 1000}};
+        in array<PRPC_UNICODE_STRING> Names with IDL{Size_is = [Count]};
+        out PLSAPR_REFERENCED_DOMAIN_LIST ReferencedDomains with IDL{IndirectionLevel = 1};
+        in out PLSAPR_TRANSLATED_SIDS_EX2 TranslatedSids;
+        in LSAP_LOOKUP_LEVEL LookupLevel;
+        in out IDLUlong MappedCount with IDL{IndirectionLevel = 1};
+        in IDLUlong LookupOptions;
+        in IDLUlong ClientRevision;
+        result NTSTATUS ReturnValue;
+
+        override string ToString()
+        {
+            return "LsarLookupNames4, ReturnValue: " + NtStatusValuesToText(ReturnValue);
+        }
+    }
+    with IDL{Opnum = 77};
+} with IDL{
+        Uuid = {12345778-1234-abcd-ef00-0123456789ab},
+        Version = "0.0",
+        Pointer_default = PointerKind.UniquePtr,
+        Ms_union = true
+    };
+
+typedef LSAPR_HANDLE = ContextHandle;
+
+type LSAPR_OBJECT_ATTRIBUTES
+{
+    IDLUlong Length;
+    char RootDirectory with IDL{IndirectionLevel = 1};
+    PSTRING ObjectName;
+    IDLUlong Attributes;
+    PLSAPR_SECURITY_DESCRIPTOR SecurityDescriptor;
+    PSECURITY_QUALITY_OF_SERVICE SecurityQualityOfService;
+}
+
+typedef PLSAPR_OBJECT_ATTRIBUTES = LSAPR_OBJECT_ATTRIBUTES with IDL{IndirectionLevel = 1};
+
+type STRING
+{
+    ushort Length;
+    ushort MaximumLength;
+    array<char> Buffer with IDL{Size_is = [MaximumLength], Length_is = [Length], IndirectionLevel = 1};
+}
+
+typedef PSTRING = STRING with IDL{IndirectionLevel = 1};
+
+type LSAPR_SECURITY_DESCRIPTOR
+{
+    char Revision;
+    char Sbz1;
+    SECURITY_DESCRIPTOR_CONTROL Control;
+    PRPC_SID Owner;
+    PRPC_SID Group;
+    PLSAPR_ACL Sacl;
+    PLSAPR_ACL Dacl;
+}
+
+typedef PLSAPR_SECURITY_DESCRIPTOR = LSAPR_SECURITY_DESCRIPTOR with IDL{IndirectionLevel = 1};
+
+typedef SECURITY_DESCRIPTOR_CONTROL = ushort;
+
+typedef PSECURITY_DESCRIPTOR_CONTROL = SECURITY_DESCRIPTOR_CONTROL with IDL{IndirectionLevel = 1};
+
+type LSAPR_ACL
+{
+    char AclRevision;
+    char Sbz1;
+    ushort AclSize;
+    array<char> Dummy1 with IDL{Size_is = [AclSize - 4], Dimensions = [null]};
+}
+
+typedef PLSAPR_ACL = LSAPR_ACL with IDL{IndirectionLevel = 1};
+
+type SECURITY_QUALITY_OF_SERVICE
+{
+    IDLUlong Length;
+    SECURITY_IMPERSONATION_LEVEL ImpersonationLevel;
+    SECURITY_CONTEXT_TRACKING_MODE ContextTrackingMode;
+    char EffectiveOnly;
+}
+
+typedef PSECURITY_QUALITY_OF_SERVICE = SECURITY_QUALITY_OF_SERVICE with IDL{IndirectionLevel = 1};
+
+pattern SECURITY_IMPERSONATION_LEVEL = enum 
+{
+    SecurityAnonymous = 0,
+    SecurityIdentification = 1,
+    SecurityImpersonation = 2,
+    SecurityDelegation = 3
+};
+
+typedef PSECURITY_IMPERSONATION_LEVEL = SECURITY_IMPERSONATION_LEVEL with IDL{IndirectionLevel = 1};
+
+typedef SECURITY_CONTEXT_TRACKING_MODE = char;
+
+typedef PSECURITY_CONTEXT_TRACKING_MODE = SECURITY_CONTEXT_TRACKING_MODE with IDL{IndirectionLevel = 1};
+
+type LSAPR_REFERENCED_DOMAIN_LIST
+{
+    IDLUlong Entries;
+    array<PLSAPR_TRUST_INFORMATION> Domains with IDL{Size_is = [Entries]};
+    IDLUlong MaxEntries;
+}
+
+typedef PLSAPR_REFERENCED_DOMAIN_LIST = LSAPR_REFERENCED_DOMAIN_LIST with IDL{IndirectionLevel = 1};
+
+type LSAPR_TRUST_INFORMATION
+{
+    RPC_UNICODE_STRING Name;
+    PRPC_SID Sid;
+}
+
+typedef PLSAPR_TRUST_INFORMATION = LSAPR_TRUST_INFORMATION with IDL{IndirectionLevel = 1};
+
+type LSAPR_TRANSLATED_SIDS
+{
+    IDLUlong Entries with IDL{Range = new RangePattern {Low = 0, High = 1000}};
+    array<PLSA_TRANSLATED_SID> Sids with IDL{Size_is = [Entries]};
+}
+
+typedef PLSAPR_TRANSLATED_SIDS = LSAPR_TRANSLATED_SIDS with IDL{IndirectionLevel = 1};
+
+type LSA_TRANSLATED_SID
+{
+    SID_NAME_USE Use;
+    IDLUlong RelativeId;
+    IDLLong DomainIndex where ValidationCheck(value >= -1, null, DiagnosisLevel.Error,
+        "LSAT: The DomainIndex field in type LSA_TRANSLATED_SID must be -1 if there are no corresponding domains. Other negative values must not be used.");
+}
+
+typedef PLSA_TRANSLATED_SID = LSA_TRANSLATED_SID with IDL{IndirectionLevel = 1};
+
+pattern SID_NAME_USE = enum 
+{
+    SidTypeUser = 1,
+    SidTypeGroup,
+    SidTypeDomain,
+    SidTypeAlias,
+    SidTypeWellKnownGroup,
+    SidTypeDeletedAccount,
+    SidTypeInvalid,
+    SidTypeUnknown,
+    SidTypeComputer,
+    SidTypeLabel
+};
+
+typedef PSID_NAME_USE = SID_NAME_USE with IDL{IndirectionLevel = 1};
+
+pattern LSAP_LOOKUP_LEVEL = enum 
+{
+    LsapLookupWksta = 1,
+    LsapLookupPDC,
+    LsapLookupTDL,
+    LsapLookupGC,
+    LsapLookupXForestReferral,
+    LsapLookupXForestResolve,
+    LsapLookupRODCReferralToFullDC
+    ...
+};
+
+typedef PLSAP_LOOKUP_LEVEL = LSAP_LOOKUP_LEVEL with IDL{IndirectionLevel = 1};
+
+type LSAPR_SID_ENUM_BUFFER
+{
+    IDLUlong Entries with IDL{Range = new RangePattern {Low = 0, High = 20480}};
+    array<PLSAPR_SID_INFORMATION> SidInfo with IDL{Size_is = [Entries]};
+}
+
+typedef PLSAPR_SID_ENUM_BUFFER = LSAPR_SID_ENUM_BUFFER with IDL{IndirectionLevel = 1};
+
+type LSAPR_SID_INFORMATION
+{
+    PRPC_SID Sid where ValidationCheck(value != null, null, DiagnosisLevel.Error,
+        "LSAT: The Sid in type LSAPR_SID_INFORMATION must be non-null.");
+}
+
+typedef PLSAPR_SID_INFORMATION = LSAPR_SID_INFORMATION with IDL{IndirectionLevel = 1};
+
+type LSAPR_TRANSLATED_NAMES
+{
+    IDLUlong Entries with IDL{Range = new RangePattern {Low = 0, High = 20480}};
+    array<PLSAPR_TRANSLATED_NAME> Names with IDL{Size_is = [Entries]};
+}
+
+typedef PLSAPR_TRANSLATED_NAMES = LSAPR_TRANSLATED_NAMES with IDL{IndirectionLevel = 1};
+
+type LSAPR_TRANSLATED_NAME
+{
+    SID_NAME_USE Use;
+    RPC_UNICODE_STRING Name;
+    IDLLong DomainIndex where ValidationCheck(value >= -1, null, DiagnosisLevel.Error,
+        "LSAT: The DomainIndex field in type LSAPR_TRANSLATED_NAME must be -1 if there are no corresponding domains. Other negative values must not be used.");
+}
+
+typedef PLSAPR_TRANSLATED_NAME = LSAPR_TRANSLATED_NAME with IDL{IndirectionLevel = 1};
+
+type LSAPR_TRANSLATED_NAMES_EX
+{
+    IDLUlong Entries with IDL{Range = new RangePattern {Low = 0, High = 20480}};
+    array<PLSAPR_TRANSLATED_NAME_EX> Names with IDL{Size_is = [Entries]};
+}
+
+typedef PLSAPR_TRANSLATED_NAMES_EX = LSAPR_TRANSLATED_NAMES_EX with IDL{IndirectionLevel = 1};
+
+type LSAPR_TRANSLATED_NAME_EX
+{
+    SID_NAME_USE Use;
+    RPC_UNICODE_STRING Name;
+    IDLLong DomainIndex where ValidationCheck(value >= -1, null, DiagnosisLevel.Error,
+        "LSAT: The DomainIndex field in type LSAPR_TRANSLATED_NAME_EX must be -1 if there are no corresponding domains. Other negative values must not be used.");
+    IDLUlong Flags where ValidationCheck(value is LSAPR_TRANSLATED_NAME_EX_Flags, null, DiagnosisLevel.Error,
+        "LSAT: The Flags field in type LSAPR_TRANSLATED_NAME_EX must be set to one of 0x00000001,0x00000002,0x00000004, not " + (Flags as string) + ".");
+}
+
+typedef PLSAPR_TRANSLATED_NAME_EX = LSAPR_TRANSLATED_NAME_EX with IDL{IndirectionLevel = 1};
+
+type LSAPR_TRANSLATED_SIDS_EX
+{
+    IDLUlong Entries with IDL{Range = new RangePattern {Low = 0, High = 1000}};
+    array<PLSAPR_TRANSLATED_SID_EX> Sids with IDL{Size_is = [Entries]};
+}
+
+typedef PLSAPR_TRANSLATED_SIDS_EX = LSAPR_TRANSLATED_SIDS_EX with IDL{IndirectionLevel = 1};
+
+type LSAPR_TRANSLATED_SID_EX
+{
+    SID_NAME_USE Use;
+    IDLUlong RelativeId;
+    IDLLong DomainIndex where ValidationCheck(value >= -1, null, DiagnosisLevel.Error,
+        "LSAT: The DomainIndex field in type LSAPR_TRANSLATED_SID_EX must be -1 if there are no corresponding domains. Other negative values must not be used.");
+    IDLUlong Flags where ValidationCheck(value is LSAPR_TRANSLATED_SID_EX_Flags, null, DiagnosisLevel.Error,
+        "LSAT: The Flags field in type LSAPR_TRANSLATED_SID_EX must be set to one of 0x00000001,0x00000002,0x00000004, not " + (Flags as string) + ".");
+}
+
+typedef PLSAPR_TRANSLATED_SID_EX = LSAPR_TRANSLATED_SID_EX with IDL{IndirectionLevel = 1};
+
+type LSAPR_TRANSLATED_SIDS_EX2
+{
+    IDLUlong Entries with IDL{Range = new RangePattern {Low = 0, High = 1000}};
+    array<PLSAPR_TRANSLATED_SID_EX2> Sids with IDL{Size_is = [Entries]};
+}
+
+typedef PLSAPR_TRANSLATED_SIDS_EX2 = LSAPR_TRANSLATED_SIDS_EX2 with IDL{IndirectionLevel = 1};
+
+type LSAPR_TRANSLATED_SID_EX2
+{
+    SID_NAME_USE Use;
+    PRPC_SID Sid;
+    IDLLong DomainIndex where ValidationCheck(value >= -1, null, DiagnosisLevel.Error,
+        "LSAT: The DomainIndex field in type LSAPR_TRANSLATED_SID_EX2 must be -1 if there are no corresponding domains. Other negative values must not be used.");
+    IDLUlong Flags where ValidationCheck(value is LSAPR_TRANSLATED_SID_EX2_Flags, null, DiagnosisLevel.Error,
+        "LSAT: The Flags field in type LSAPR_TRANSLATED_SID_EX2 must be set to one of 0x00000001,0x00000002,0x00000004, not " + (Flags as string) + ".");
+}
+
+typedef PLSAPR_TRANSLATED_SID_EX2 = LSAPR_TRANSLATED_SID_EX2 with IDL{IndirectionLevel = 1};
+
+// Following types are used for validation check.
+
+pattern LSAPR_TRANSLATED_SID_EX_Flags = flags IDLUlong
+{
+    FlagsValue1 = 0x00000001,
+    FlagsValue2 = 0x00000002,
+    FlagsValue4 = 0x00000004
+} with IDL{DoNotGenerate = true};
+
+pattern LSAPR_TRANSLATED_SID_EX2_Flags = flags IDLUlong
+{
+    FlagsValue1 = 0x00000001,
+    FlagsValue2 = 0x00000002,
+    FlagsValue4 = 0x00000004
+} with IDL{DoNotGenerate = true};
+
+pattern LSAPR_TRANSLATED_NAME_EX_Flags = flags IDLUlong
+{
+    FlagsValue1 = 0x00000001,
+    FlagsValue2 = 0x00000002,
+    FlagsValue4 = 0x00000004
+} with IDL{DoNotGenerate = true};
+
+pattern LookupOptionsRestriction = enum IDLUlong
+{
+    Option1 = 0x00000000,
+    Option2 = 0x80000000
+}with IDL{DoNotGenerate = true};
+
+// WORKAROUND: Bug #49374. These lines are copied from DTYP.opn
+type RPC_UNICODE_STRING
+{
+    ushort Length;
+    ushort MaximumLength;
+    array<WCHAR> Buffer with IDL{IndirectionLevel = 1, Length_is = [Length / 2], Size_is =[MaximumLength / 2]};
+} with IDL{DoNotGenerate = true};
+
+typedef PRPC_UNICODE_STRING = RPC_UNICODE_STRING with IDL{IndirectionLevel = 1, DoNotGenerate = true};
+
+type RPC_SID
+{
+    byte Revision where value == 0x01;
+    byte SubAuthorityCount;
+    RPC_SID_IDENTIFIER_AUTHORITY IdentifierAuthority;
+    array<uint> SubAuthority with IDL{Size_is = [SubAuthorityCount], Dimensions = [null], DoNotGenerate = true};
+} with IDL{DoNotGenerate = true};
+
+typedef PRPC_SID = RPC_SID with IDL{IndirectionLevel = 1, DoNotGenerate = true};
+
+type RPC_SID_IDENTIFIER_AUTHORITY
+{
+    array<byte> Value 
+        where ValidationCheck((value as binary) is SidIdentifierAuthorityValue, null, 
+            "LSAT: The Value field in type RPC_SID_IDENTIFIER_AUTHORITY is an undefined value. Please refer to RPC_SID_IDENTIFIER_AUTHORITY in the Technical Document MS-DTYP.") 
+        with IDL{Dimensions = [6]};
+} with IDL{DoNotGenerate = true};

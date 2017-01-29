@@ -1,0 +1,225 @@
+﻿protocol WSCIMBinding with 
+XmlEncodingDefaults{Namespace = WSCimbindingNamespace},
+Documentation
+{
+    ProtocolName = "Web Services for Management(WS-Management) CIM Binding Specification",
+    ShortName = "WSCIMBinding",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "WSCIMBinding", Version = "1.2.0", Link = "http://www.dmtf.org/sites/default/files/standards/documents/DSP0227_1.2.0.pdf"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="09/28/2011"}
+        ]
+};
+
+using Utility;
+using XSD;
+using Standard;
+using WSManagement;
+using WSEN;
+using WSMID;
+
+// Constant declaration: namespace for WSCIMBinding
+const string WSCimbindingNamespace = "http://schemas.dmtf.org/wbem/wsman/1/cimbinding.xsd";
+
+autostart actor WsmbOverWsmanServer(WSEN.Server server)
+{
+    observe server accepts enumerate:WSEN.DataSource.EnumerateOp
+    {
+        // This is used to store the parsing result of the extended elements.
+        array<any> extendElements = [];
+
+        var enumerateExtending = GetEmbedded<array<any>>(enumerate, "WsmanOnEnumerate");
+        if (enumerateExtending != nothing)
+        {
+            array<any> data = enumerateExtending as array<any>;
+
+            foreach (var m in data)
+            {
+                if (m is WSManagement.FilterMixedDataType)
+                {
+                    WSManagement.FilterMixedDataType filter = m as WSManagement.FilterMixedDataType;
+                    if (filter.AnyElement != nothing)
+                    {
+                        ParseAnyElement(filter.AnyElement as array<xml>, ref extendElements);
+                    }
+                }
+            }
+
+            if (extendElements.Count > 0)
+            {
+                SetEmbedded<array<any>>(enumerate, "WsmbOnFilter", extendElements);
+                enumerate.AppendExtendingSummary(", Extended by WSCIMBinding");
+            }
+        }
+
+        if (enumerate.AnyElement != nothing)
+        {
+            ParseAnyElement(enumerate.AnyElement as array<xml>, ref extendElements);
+
+            if (extendElements.Count > 0)
+            {
+                SetEmbedded<array<any>>(enumerate, "WsmbOnEnumerate", extendElements);
+                enumerate.AppendExtendingSummary(", Extended by WSCIMBinding");
+            }
+        }
+    }
+}
+
+autostart actor WsmbOverWsmidServer(IdentifyEndpoint server)
+{
+    observe server accepts identify:IdentifyContract.IdentifyOp
+    {
+        // This is used to store the parsing result of the extended elements.
+        array<any> extendElements = [];
+
+        var identifyExtending = GetEmbedded<array<any>>(identify, "WsmbOnIdentify");
+        if (identifyExtending != nothing)
+        {
+            array<any> data = identifyExtending as array<any>;
+
+            foreach (var m in data)
+            {
+                if (m is WSManagement.FilterMixedDataType)
+                {
+                    WSManagement.FilterMixedDataType filter = m as WSManagement.FilterMixedDataType;
+                    if (filter.AnyElement != nothing)
+                    {
+                        ParseAnyElement(filter.AnyElement as array<xml>, ref extendElements);
+                    }
+                }
+            }
+
+            if (extendElements.Count > 0)
+            {
+                SetEmbedded<array<any>>(identify, "WsmbOnFilter", extendElements);
+                identify.AppendExtendingSummary(", Extended by WSCIMBinding");
+            }
+        }
+        
+        if (identify.AnyElement1 != nothing)
+        {
+            ParseAnyElement(identify.AnyElement1 as array<xml>, ref extendElements);
+
+            if (extendElements.Count > 0)
+            {
+                SetEmbedded<array<any>>(identify, "WsmbOnIdentify", extendElements);
+                identify.AppendExtendingSummary(", Extended by WSCIMBinding");
+            }
+        }
+        
+        if (identify.AnyElement2 != nothing)
+        {
+            ParseAnyElement(identify.AnyElement2 as array<xml>, ref extendElements);
+
+            if (extendElements.Count > 0)
+            {
+                SetEmbedded<array<any>>(identify, "WsmbOnIdentify", extendElements);
+                identify.AppendExtendingSummary(", Extended by WSCIMBinding");
+            }
+        }
+    }
+}
+
+void ParseAnyElement(array<xml> anyElement, ref array<any> extendElements)
+{
+    foreach (var data in anyElement)
+    {
+        switch (data.NamespaceUri)
+        {
+            case "http://schemas.dmtf.org/wbem/wsman/1/cimbinding.xsd" =>
+                optional XmlName name = data.Name;
+                if (name != nothing)
+                {
+                    switch ((name as XmlName).LocalName)
+                    {
+                        case "AssociatedInstances" =>
+                            switch (data)
+                            {
+                                case associatedInstances:AssociatedInstances from XmlDecoder<AssociatedInstances> =>
+                                    extendElements += [associatedInstances];
+                                default =>
+                                    ThrowDecodingException("WSCIMBinding", "AssociatedInstances");
+                            }
+                        case "AssociationInstances" =>
+                            switch (data)
+                            {
+                                case associationInstances:AssociationInstances from XmlDecoder<AssociationInstances> =>
+                                    extendElements += [associationInstances];
+                                default =>
+                                    ThrowDecodingException("WSCIMBinding", "AssociationInstances");
+                            }
+                        case "PolymorphismMode" =>
+                            switch (data)
+                            {
+                                case polymorphismMode:PolymorphismMode from XmlDecoder<PolymorphismMode> =>
+                                    extendElements += [polymorphismMode];
+                                default =>
+                                    ThrowDecodingException("WSCIMBinding", "PolymorphismMode");
+                            }
+                        case "CapabilityFaultIncludesCimError" =>
+                            switch (data)
+                            {
+                                case capabilityFaultIncludesCIMError:CapabilityFaultIncludesCimError from XmlDecoder<CapabilityFaultIncludesCimError> =>
+                                    extendElements += [capabilityFaultIncludesCIMError];
+                                default =>
+                                    ThrowDecodingException("WSCIMBinding", "CapabilityFaultIncludesCimError");
+                            }
+                    }
+                }
+        }
+    }
+}
+
+pattern AssociatedInstances = AssociatedInstancesType with XmlEncoding{Name = "AssociatedInstances"};
+
+type AssociatedInstancesType
+{
+    xml Object with XmlEncoding{IsAny = true, Name = "Object", Namespace = XmlNamespaceIndicator.Any};
+    optional XSNCNameText AssociationClassName with XmlEncoding{Name = "AssociationClassName", Kind = XmlKind.Element};
+    optional XSNCNameText Role with XmlEncoding{Name = "Role", Kind = XmlKind.Element};
+    optional XSNCNameText ResultClassName with XmlEncoding{Name = "ResultClassName", Kind = XmlKind.Element};
+    optional XSNCNameText ResultRole with XmlEncoding{Name = "ResultRole", Kind = XmlKind.Element};
+    array<XSNCNameText> IncludeResultProperty with XmlEncoding{Name = "ResultRole", Kind = XmlKind.Element};
+}
+
+pattern AssociationInstances = AssociationInstancesType with XmlEncoding{Name = "AssociationInstances"};
+
+type AssociationInstancesType
+{
+    xml Object with XmlEncoding{IsAny = true, Name = "Object", Namespace = XmlNamespaceIndicator.Any};
+    optional XSNCNameText ResultClassName with XmlEncoding{Name = "ResultClassName", Kind = XmlKind.Element};
+    optional XSNCNameText Role with XmlEncoding{Name = "Role", Kind = XmlKind.Element};
+    array<XSNCNameText> IncludeResultProperty with XmlEncoding{Name = "ResultRole", Kind = XmlKind.Element};
+}
+
+type XSNCNameText
+{
+    XSNCName Text with XmlEncoding{Name = "Text", Kind = XmlKind.Text};
+}
+
+pattern PolymorphismMode = PolymorphismModeType with XmlEncoding{Name = "PolymorphismMode"};
+
+type PolymorphismModeType
+{
+    enum Token
+    {
+        IncludeSubClassProperties = "IncludeSubClassProperties",
+        ExcludeSubClassProperties = "ExcludeSubClassProperties",
+        None                      = "None"
+    } Mode with XmlEncoding{Kind = XmlKind.Text};
+}
+
+pattern CapabilityFaultIncludesCimError = CapabilityFaultIncludesCimErrorType with XmlEncoding{Name = "CapabilityFaultIncludesCimError"};
+
+type CapabilityFaultIncludesCimErrorType
+{
+    optional string Error with XmlEncoding{Name = "Error", Kind = XmlKind.Text};
+}

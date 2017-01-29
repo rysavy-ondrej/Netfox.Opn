@@ -1,0 +1,75 @@
+module SOAP11
+with XmlEncodingDefaults
+{
+    Namespace = Soap11Namespace,
+    Order = XmlOrderIndicator.Sequence
+},
+Documentation
+{
+    ProtocolName = "Simple Object Access Protocol 1.1",
+    ShortName = "SOAP11",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "SOAP11", Link = "http://www.w3.org/TR/soap11/"},
+        ],
+    RevisionSummary = 
+        [
+            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="09/02/2011"}
+        ]
+};
+
+using XSD;
+
+// -------------------------------------------
+// Data types
+
+type Envelope
+{
+    optional xml Header;
+    xml Body;
+    optional array<xml> AnyElement with XmlEncoding {IsAny = true};
+    optional array<xml> AnyAttribute with XmlEncoding {Kind = XmlKind.Attribute, IsAny = true};
+}
+
+/*
+    Global Attributes.  The following attributes are intended to be
+    usable via qualified attribute names on any complex type referencing
+    them.
+*/
+pattern MustUnderstand = bool with XmlEncoding{Name = "mustUnderstand", Kind = XmlKind.Attribute};
+pattern Actor = XSAnyURI;
+pattern EncodingStyle = array<XSAnyURI> with XmlEncoding{Name = "encodingStyle", Kind = XmlKind.Attribute};
+
+// SOAP Fault
+
+//structure of SOAP Fault:
+//+--Fault
+//    +--faultcode
+//    +--faultstring
+//    +--faultactor?
+//    +--detail?
+//
+
+type Fault
+{
+    string FaultCode with XmlEncoding{Name = "faultcode", Namespace = ""}; // xs:QName, example: "Client.Authentication"
+    string FaultString with XmlEncoding{Name = "faultstring", Namespace = ""};
+    optional XSAnyURI FaultActor with XmlEncoding{Name = "faultactor", Namespace = ""};
+    optional xml Detail with XmlEncoding{Name = "detail", Namespace = ""};
+}
+
+pattern FaultCode = enum string
+{
+    VersionMismatch = "VersionMismatch",
+    MustUnderstand = "MustUnderstand",
+    Client = "Client",
+    Server = "Server"
+};
+
+// SOAP 1.1
+const string Soap11Namespace = "http://schemas.xmlsoap.org/soap/envelope/";

@@ -1,0 +1,3451 @@
+protocol iSCSI with
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "Internet Small Computer Systems Interface",
+    ShortName = "iSCSI",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References =
+        [
+            new Reference{Name = "RFC 3720"},
+            new Reference{Name = "RFC 3721"},
+            new Reference{Name = "RFC 5048"},
+            new Reference{Name = "SAM2",  Link = "http://www.t10.org/cgi-bin/ac.pl?t=f&f=sam2r24.pdf"},
+            new Reference{Name = "SPC-2", Link = "http://www.t10.org/cgi-bin/ac.pl?t=f&f=spc2r20.pdf"},
+            new Reference{Name = "SBC-3", Link = "http://www.t10.org/cgi-bin/ac.pl?t=f&f=sbc3r17.pdf"},
+            new Reference{Name = "SPC-4", Link = "http://www.t10.org/cgi-bin/ac.pl?t=f&f=spc4r33.pdf"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "04/28/2012"}
+        ]
+};
+
+using Standard;
+using IANA;
+using Utility;
+using TCP;
+using VirtualTransport;
+using Reassembly;
+
+/* Future Reference:
+ * 1. Specify the offset and source data for the manule decoded fields.
+ * 2. Add more command parameters type for the commands specified in [SPC-4];
+ * 3. Add Initiator side endpoint and sequence validation
+ * 4. Add iSCSISession endpoint by the index of TSIH
+ * 5. Add detailed key-value syntax definitons according to [RFC 3729]12. Login/Text Operational Text Keys
+ * 6. Add reassemble logic if the CommandData in ScsiCommand message is overflow
+ * 7. Add virtual operation
+ * // Future Reference: Define more detailed syntax according to different Value type.
+ */
+
+//-------------------------------------------
+// Annotation
+annotation bool NegotiationMessage#IsReassembled;
+
+//-------------------------------------------
+// Architecture
+
+/* The iSCSI layer that builds/receives iSCSI PDUs and relays/receives them to/from one or more TCP connections;
+ * the group of connections form an initiator-target "session".
+ * An iSCSI Node is identified by its iSCSI Name.
+ * It allows multiple iSCSI nodes to use the same addresses, and the same iSCSI node to use multiple addresses.
+ * The following diagram shows an example for its ralationship with other protocols of server side.
+ *    ----------------------------IP Network---------------------
+ *             |               |                    |
+ *        +----|---------------|-----+         +----|---------+
+ *        | +---------+  +---------+ |         | +---------+  |
+ *        | | Network |  | Network | |         | | Network |  | 
+ *        | | Portal  |  | Portal  | |         | | Portal  |  |
+ *        | +--|------+  +---------+ |         | +---------+  |
+ *        +--------------------------+         +--------------+
+ *             |               |                    |
+ *    +--------|---------------|--------------------|------------+
+ *    |        -----------------  iSCSI Server      |            |
+ *    | +--------|----+ +----|----------------------|--+         |
+ *    | | iSCSI Node  | |         iSCSI Node           |         |
+ *    | |  (Target)   | |          (Target)            |         |
+ *    | +-------------+ +------------------------------+         |
+ *    +----------------------------------------------------------+
+ */
+
+// Server side
+endpoint TargetNode [string TargetName]
+    over Server
+    provides Messages consumes Messages;
+
+/* The server endpiont of a SCSI transport.
+ * No need to bind this endpoint over TCP server as communication between the initiator and target occurs over one or more TCP connections.
+ */
+endpoint Server
+    provides Messages consumes Messages
+{
+    string targetName = "";
+    
+    observe this issues m: Messages.LoginResponse
+    {
+        // Get the TargetName
+        if (m.LoginParameters is map<string, string>)
+        {
+            var pairs = m.LoginParameters as map<string, string>;
+            if ("TargetName" in pairs)
+            {
+                targetName = pairs["TargetName"] as string;
+            }
+        }
+    }
+    
+    observe this issues m: Messages.TextResponse
+    {
+        // Get the TargetName
+        if (m.Text is map<string, string>)
+        {
+            var pairs = m.Text as map<string, string>;
+            if (pairs.Keys["TargetName"])
+            {
+                targetName = pairs["TargetName"] as string;
+            }
+        }
+    }
+    
+    observe this issues m: Messages.LogoutResponse
+    {
+        // Clear the target name when the session is logout
+        targetName = "";
+    }
+    
+    // Dispatch message to TargetNode to divide the session by TargetName
+    process this accepts m: FeatureMessage
+    {
+        dispatch (endpoint TargetNode[targetName] over this) accepts m;
+    }
+    
+    process this issues m: FeatureMessage
+    {
+        dispatch (endpoint TargetNode[targetName] over this) issues m;
+    }
+}
+
+/* Intermediate endpoint that used to recieve the fragmented negotiation message and TCP segment with incompelete payload.
+ * And will set fragment origins for the reassembled message.
+ */
+endpoint IntermediateNode
+    accepts NegotiationMessage issues NegotiationMessage
+    accepts VirtualTransport.VirtualDataSegment
+{
+    // Keeps the origins for the reassembled message  
+    array<any message> originsAccepts = [];
+    array<any message> originsIssues = [];
+    
+    process this accepts m:NegotiationMessage
+    {
+        // The message is reassembled
+        if (m#IsReassembled == nothing)
+        {
+            originsAccepts += [m];
+        }
+        else
+        {
+            m.Origins = originsAccepts;
+            originsAccepts = [];
+            dispatch endpoint Server accepts m;
+        }
+    }
+    
+    process this issues m:NegotiationMessage
+    {
+        if (m#IsReassembled == nothing)
+        {
+            originsIssues += [m];
+        }
+        // The message is reassembled
+        else
+        {
+            m.Origins = originsIssues;
+            originsIssues = [];
+            dispatch endpoint Server issues m;
+        }
+    }
+}
+
+// Client side
+client endpoint InitiatorNode connected to TargetNode;
+client endpoint Client connected to Server;
+
+// Forward the parsed message to the iSCSI layer from TCP layer
+autostart actor IscsiOverTcp(VirtualTransport.Server server)
+{
+    DecodingCache inboundCachePort1320 = null;
+    DecodingCache outboundCachePort1320 = null;
+    DecodingCache inboundCachePort860 = null;
+    DecodingCache outboundCachePort860 = null;
+    
+    // Keep the session available parameters from the login messages
+    LoginPhaseParameters lpp;
+    
+    /* Keep the data segment for the Text/Login Request and Text/Login Response
+     * in case that Key=value pairs span PDU boundaries.
+     */
+    binary loginRequestBuffer = $[];
+    binary loginResponseBuffer = $[];
+    binary textRequestBuffer = $[];
+    binary textResponseBuffer = $[];
+    
+    // Decode the TCP Payload into iSCSI messages and dispatch to messages to TragetNode endpoint
+    // Ruls that listen on TCP port 1320
+    process server accepts segment:VirtualTransport.VirtualDataSegment{DestinationPort is Port.iSCSI}
+    {
+        if (inboundCachePort1320 == null)
+        {
+            inboundCachePort1320 = new DecodingCache{ Dispatcher = AcceptDispatcher };
+        }
+        
+        inboundCachePort1320.Add(segment);
+        inboundCachePort1320.DecodeAndDispatchMessages(segment, ref loginRequestBuffer, ref textRequestBuffer, ref lpp);
+    }
+    
+    process server issues segment:VirtualTransport.VirtualDataSegment{SourcePort is Port.iSCSI}
+    {
+        if (outboundCachePort1320 == null)
+        {
+            outboundCachePort1320 = new DecodingCache{ Dispatcher = IssueDispatcher };
+        }
+        
+        outboundCachePort1320.Add(segment);
+        outboundCachePort1320.DecodeAndDispatchMessages(segment, ref loginResponseBuffer, ref textResponseBuffer, ref lpp);
+    }
+    
+    // Ruls that listen on TCP port 860
+    process server accepts segment:VirtualTransport.VirtualDataSegment{DestinationPort is Port.iSCSI860}
+    {
+        if (inboundCachePort860 == null)
+        {
+            inboundCachePort860 = new DecodingCache{ Dispatcher = AcceptDispatcher };
+        }
+        
+        inboundCachePort860.Add(segment);
+        inboundCachePort860.DecodeAndDispatchMessages(segment, ref loginRequestBuffer, ref textRequestBuffer, ref lpp);
+    }
+    
+    process server issues segment:VirtualTransport.VirtualDataSegment{SourcePort is Port.iSCSI860}
+    {
+        if (outboundCachePort860 == null)
+        {
+            outboundCachePort860 = new DecodingCache{ Dispatcher = IssueDispatcher };
+        }
+        
+        outboundCachePort860.Add(segment);
+        outboundCachePort860.DecodeAndDispatchMessages(segment, ref loginResponseBuffer, ref textResponseBuffer, ref lpp);
+    }
+    
+    void AcceptDispatcher(FeatureMessage featureMessage)
+    {
+        dispatch endpoint Server over server accepts featureMessage;
+    }
+    
+    void IssueDispatcher(FeatureMessage featureMessage)
+    {
+        dispatch endpoint Server over server issues featureMessage;
+    }
+    
+    ~endpoint(VirtualTransport.Server server)
+    {
+        if (inboundCachePort1320 != null)
+        {
+            inboundCachePort1320.Clear();
+        }
+        if (outboundCachePort1320 != null)
+        {
+            outboundCachePort1320.Clear();
+        }
+        if (inboundCachePort860 != null)
+        {
+            inboundCachePort860.Clear();
+        }
+        if (outboundCachePort860 != null)
+        {
+            outboundCachePort860.Clear();
+        }
+    }
+}
+
+//-------------------------------------------
+// Messages
+
+// The base message of Text/Login message, which used to establish an iSCSI session.
+message NegotiationMessage{};
+
+// The base message for the messages that sent in the full feature phase, after the login process has completed
+message FeatureMessage{}
+
+contract Messages
+{
+    // --------------------- Messages that send by Initiator ------------------
+    
+    // [RFC 3720] 10.3.  SCSI Command
+    message ScsiCommand : FeatureMessage
+    {
+        // Basic Header Segment (BHS)
+        byte Reserved1 with BinaryEncoding{Width = 1};
+        bool I with BinaryEncoding{Width = 1};
+        (Opcodes where value == Opcodes.ScsiCommand) Opcode with BinaryEncoding{Width = 6};
+    
+        ScsiCommandFlagsAndTaskAttributes TaskAttributes;
+        ushort Reserved2 with BinaryEncoding{Length = 2};
+        byte TotalAHSLength;
+        uint DataSegmentLength with BinaryEncoding{Width = 24};
+        long LogicalUnitNumber;
+        uint InitiatorTaskTag;
+        uint ExpectedDataTransferLength;
+        uint CmdSN;
+        uint ExpStatSN;
+        (ScsiCommandDescriptorBlock | binary) ScsiCommandDescriptorBlock with BinaryEncoding{Length = 16};
+       
+        // Optional Fields
+        // Will limit the data to the expected array size in the message decoding.
+        optional [| TotalAHSLength > 0 |] array<AdditionalHeaderSegment> AHS;//BinaryEncoding{Width = TotalAHSLength * 8};
+        // Add this addtional field for operation code 7Fh, since the data will be fall in two parts and need manully merge it.
+        optional VariableLengthCommandDescriptorBlock VariableLengthCommandDescriptorBlock with Encoding{Ignore = true};
+        // Ingnored the decoding for the existence and type of digests are negotiated during the Login Phase.
+        optional uint HeaderDigest with Encoding{Ignore = true};
+        optional binary CommandData with Encoding{Ignore = true};
+        optional array<byte> Padding with Encoding{Ignore = true};
+        optional uint DataDigest with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            string summary = "SCSI Command, Operation = ";
+            if (ScsiCommandDescriptorBlock is ScsiCommandDescriptorBlock)
+            {
+                return summary + ScsiCommandDescriptorBlock.ToString();
+            }
+            else
+            {
+                return summary + VariableLengthCommandDescriptorBlock.ToString();
+            }
+        }
+    }
+    
+    // ----------------- Messages that send by Targetor ---------------------
+    
+    // [RFC 3720] 10.4.  SCSI Response
+    message ScsiResponse : FeatureMessage
+    {
+        // Basic Header Segment (BHS) 
+        byte Reserved1 with BinaryEncoding{Width = 2};
+        (Opcodes where value == Opcodes.ScsiResponse) Opcode with BinaryEncoding{Width = 6};
+        
+        ScsiResponseFlags Flags;
+        byte Response where ErrorCodeIf(value is ResponseByte.TargetFailure, this, "Target failure");
+        Status Status;
+        byte TotalAHSLength where ValidationCheck(value == 0, this, "This PDU TotalAHSLength must be zero.");
+        uint DataSegmentLength with BinaryEncoding{Width = 24};
+        array<byte> Reserved2 with BinaryEncoding{Length = 8};
+        uint InitiatorTaskTag;
+        uint SnackTag;
+        uint StatSN;
+        uint ExpCmdSN;
+        uint MaxCmdSN;
+        uint ExpDataSN;
+        uint BidirectionalReadResidualCount;
+        uint ResidualCount;
+        
+        // Optional Fields, ingnored the decoding for the existence and type of digests are negotiated during the Login Phase.
+        optional uint HeaderDigest with Encoding{Ignore = true};
+        optional SenseAndResponseDataSegment[DataSegmentLength] DataSegment with Encoding{Ignore = true};
+        optional uint DataDigest with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            return "SCSI Response, Status = " + StatusToText(Status);
+        }
+    }
+    
+    // [RFC 3720] 10.5.  Task Management Function Request
+    message ScsiTaskManagementFunctionRequest : FeatureMessage
+    {
+        // Basic Header Segment (BHS) 
+        byte Reserved1 with BinaryEncoding{Width = 1};
+        bool I with BinaryEncoding{Width = 1};
+        (Opcodes where value == Opcodes.ScsiTaskManagementFunctionRequest) Opcode with BinaryEncoding{Width = 6};
+        
+        bool F where ValidationCheck(value == true, this, "The F bit should be set.") with BinaryEncoding{Width = 1};
+        TaskManagementFunctions Function with BinaryEncoding{Width = 7};
+        
+        array<byte> Reserved2 with BinaryEncoding{Length = 2};
+        byte TotalAHSLength where ValidationCheck(value == 0, this, "This PDU TotalAHSLength must be zero.");
+        uint DataSegmentLength where ValidationCheck(value == 0, this, "This PDU DataSegmentLength must be zero.") with BinaryEncoding{Width = 24};
+        long LogicalUnitNumber;
+        uint InitiatorTaskTag;
+        uint ReferencedTaskTag
+            where ValidationCheck(value == 0xFFFFFFFF || (Function in {TaskManagementFunctions.AbortTask, TaskManagementFunctions.TaskReassign}), this, DiagnosisLevel.Error, 
+            "iSCSI: The ReferencedTaskTag in message ScsiTaskManagementFunctionRequest must be set to 0xFFFFFFFF when Function in the same message is not AbortTask or TaskReassign.");
+        uint CmdSN;
+        uint ExpStatSN;
+        uint RefCmdSN;
+        uint ExpDataSN;
+        array<byte> Reserved3 with BinaryEncoding{Length = 8};
+        
+        // Optional Fields, ingnored the decoding for the existence and type of digests are negotiated during the Login Phase.
+        optional uint HeaderDigest with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            return "SCSI Task Management Function Request, Function = " + TaskManagementFunctionsMap[Function];
+        }
+    }
+    
+    // [RFC 3720] 10.6.  Task Management Function Response
+    message ScsiTaskManagementFunctionResponse : FeatureMessage
+    {
+        // Basic Header Segment (BHS) 
+        byte Reserved1 with BinaryEncoding{Width = 2};
+        (Opcodes where value == Opcodes.ScsiTaskManagementFunctionResponse) Opcode with BinaryEncoding{Width = 6};
+        
+        bool F where ValidationCheck(value == true, this, "The F bit should be set.") with BinaryEncoding{Width = 1};
+        byte Reserved2 with BinaryEncoding{Width = 7};
+        
+        byte Response;
+        byte Reserved3;
+        byte TotalAHSLength where ValidationCheck(value == 0, this, "This PDU TotalAHSLength must be zero.");
+        uint DataSegmentLength where ValidationCheck(value == 0, this, "This PDU DataSegmentLength must be zero.") with BinaryEncoding{Width = 24};
+        array<byte> Reserved4 with BinaryEncoding{Length = 8};
+        uint InitiatorTaskTag;
+        array<byte> Reserved5 with BinaryEncoding{Length = 4};
+        uint StatSN;
+        uint ExpCmdSN;
+        uint MaxCmdSN;
+        array<byte> Reserved6 with BinaryEncoding{Length = 12};
+        
+        // Optional Fields, ingnored the decoding for the existence and type of digests are negotiated during the Login Phase.
+        optional uint HeaderDigest with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            return "Task Management Function Response, Response = " +
+                (TaskManagementFunctionResponseMap.Keys[Response]? TaskManagementFunctionResponseMap[Response] : "Reserved");
+        }
+    }
+    
+    // [RFC 3720] 10.7.  SCSI Data-Out & SCSI Data-In
+    message ScsiDataOut : FeatureMessage
+    {
+        // Basic Header Segment (BHS)
+        byte Reserved with BinaryEncoding{Width = 1};
+        bool I with BinaryEncoding{Width = 1};
+        (Opcodes where value == Opcodes.ScsiDataOut) Opcode with BinaryEncoding{Width = 6};
+        
+        bool F with BinaryEncoding{Width = 1};
+        uint Reserved2 with BinaryEncoding{Width = 23};
+        
+        byte TotalAHSLength where ValidationCheck(value == 0, this, "This PDU TotalAHSLength must be zero.");
+        uint DataSegmentLength with BinaryEncoding{Width = 24};
+        long LogicalUnitNumber;
+        uint InitiatorTaskTag;
+        uint TargetTransferTag;
+        array<byte> Reserved3 with BinaryEncoding{Length = 4};
+        uint ExpStatSN;
+        array<byte> Reserved4 with BinaryEncoding{Length = 4};
+        uint DataSN;
+        uint BufferOffset;
+        array<byte> Reserved5 with BinaryEncoding{Length = 4};
+        
+        // Optional Fields, ingnored the decoding for the existence and type of digests are negotiated during the Login Phase.
+        optional uint HeaderDigest with Encoding{Ignore = true};
+        binary DataSegment with Encoding{Ignore = true};
+        optional array<byte> Padding with Encoding{Ignore = true};
+        optional uint DataDigest with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            return "SCSI Data-Out (for WRITE operations),  DataSN = " + (DataSN as string);
+        }
+    }
+
+    message ScsiDataIn : FeatureMessage
+    {
+        // Basic Header Segment (BHS) 
+        byte Reserved1 with BinaryEncoding{Width = 2};
+        (Opcodes where value == Opcodes.ScsiDataIn) Opcode with BinaryEncoding{Width = 6};
+        
+        ScsiDataInFlags Flags;
+        byte Reserved2;
+        byte Status;
+        byte TotalAHSLength where ValidationCheck(value == 0, this, "This PDU TotalAHSLength must be zero.");
+        uint DataSegmentLength with BinaryEncoding{Width = 24};
+        ulong LogicalUnitNumber;
+        uint InitiatorTaskTag;
+        uint TargetTransferTag;
+        uint StatSN;
+        uint ExpCmdSN;
+        uint MaxCmdSN;
+        uint DataSN;
+        uint BufferOffset;
+        uint ResidualCount;
+        
+        // Optional Fields, ingnored the decoding for the existence and type of digests are negotiated during the Login Phase.
+        optional uint HeaderDigest with Encoding{Ignore = true};
+        binary DataSegment with Encoding{Ignore = true};
+        optional array<byte> Padding with Encoding{Ignore = true};
+        optional uint DataDigest with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            return "SCSI Data-In (for READ operations), DataSN = " + (DataSN as string);
+        }
+    }
+    
+    // [RFC 3720] 10.8.  Ready To Transfer (R2T)
+    message ReadyToTransfer : FeatureMessage
+    {
+        // Basic Header Segment (BHS) 
+        byte Reserved1 with BinaryEncoding{Width = 2};
+        (Opcodes where value == Opcodes.ReadyToTransfer) Opcode with BinaryEncoding{Width = 6};
+        
+        bool F where ValidationCheck(value == true, this, "The F bit should be set.") with BinaryEncoding{Width = 1};
+        uint Reserved2 with BinaryEncoding{Width = 23};
+        byte TotalAHSLength where ValidationCheck(value == 0, this, "This PDU TotalAHSLength must be zero.");
+        uint DataSegmentLength where ValidationCheck(value == 0, this, "This PDU DataSegmentLength must be zero.") with BinaryEncoding{Width = 24};
+        ulong LogicalUnitNumber;
+        uint InitiatorTaskTag;
+        uint TargetTransferTag;
+        uint StatSN;
+        uint ExpCmdSN;
+        uint MaxCmdSN;
+        uint R2tsn;
+        uint BufferOffset;
+        uint DesiredDataTransferLength;
+        
+        // Optional Fields, ingnored the decoding for the existence and type of digests are negotiated during the Login Phase.
+        optional uint HeaderDigest with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            return "Ready To Transfer, R2TSN = " + (R2tsn as string);
+        }
+    }
+    
+    // [RFC 3720] 10.9.  Asynchronous Message
+    message AsynchronousMessage : FeatureMessage
+    {
+        // Basic Header Segment (BHS) 
+        byte Reserved1 with BinaryEncoding{Width = 2};
+        (Opcodes where value == Opcodes.AsynchronousMessage) Opcode with BinaryEncoding{Width = 6};
+        
+        bool F where ValidationCheck(value == true, this, "The F bit should be set.") with BinaryEncoding{Width = 1};
+        uint Reserved2 with BinaryEncoding{Width = 23};
+        byte TotalAHSLength where ValidationCheck(value == 0, this, "This PDU TotalAHSLength must be zero.");
+        uint DataSegmentLength with BinaryEncoding{Width = 24};
+        ulong LogicalUnitNumber;
+        uint InitiatorTaskTag where ValidationCheck(value == 0xffffffff, this, "The InitiatorTaskTag must be 0xffffffff.");
+        uint Reserved3;
+        uint StatSN;
+        uint ExpCmdSN;
+        uint MaxCmdSN;
+        byte AsyncEvent;
+        byte AsyncVCode;
+        ushort Parameter1;
+        ushort Parameter2;
+        ushort Parameter3;
+        array<byte> Reserved4 with BinaryEncoding{Length = 4};
+        
+        // Optional Fields, ingnored the decoding for the existence and type of digests are negotiated during the Login Phase.
+        optional uint HeaderDigest with Encoding{Ignore = true};
+        optional SenseDataAndiSCSIEventData[DataSegmentLength] SenseDataAndiSCSIEventData with Encoding{Ignore = true};
+        optional uint DataDigest with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            return "Asynchronous Message, AsyncEvent = " +
+                (AsyncEventMap.Keys[AsyncEvent]? AsyncEventMap[AsyncEvent] : AsyncEvent as string);
+        }
+    }
+    
+    // [RFC 3720] 10.10.  Text Request
+    message TextRequest : NegotiationMessage
+    {
+        // Basic Header Segment (BHS)
+        byte Reserved with BinaryEncoding{Width = 1};
+        bool I with BinaryEncoding{Width = 1};
+        (Opcodes where value == Opcodes.TextRequest) Opcode with BinaryEncoding{Width = 6};
+        
+        bool F with BinaryEncoding{Width = 1};
+        bool C where ValidationCheck((C && !F) || (!C), this, "If the C bit set to 1, must not have the F bit set to 1.")
+            with BinaryEncoding{Width = 1};
+        uint Reserved2 with BinaryEncoding{Width = 22};
+        
+        byte TotalAHSLength where ValidationCheck(value == 0, this, "This PDU TotalAHSLength must be zero.");
+        uint DataSegmentLength with BinaryEncoding{Width = 24};
+        long LogicalUnitNumber;
+        uint InitiatorTaskTag;
+        uint TargetTransferTag;
+        uint CmdSN;
+        uint ExpStatSN;
+        array<byte> Reserved4 with BinaryEncoding{Length = 16};
+        
+        // Optional Fields, ingnored the decoding for the existence and type of digests are negotiated during the Login Phase.
+        optional uint HeaderDigest with Encoding{Ignore = true};
+        (binary | map<string, string> | any) Text with Encoding{Ignore = true};
+        optional array<byte> Padding with Encoding{Ignore = true};
+        optional uint DataDigest with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            string summary = "Text Request";
+            return ((this#IsReassembled == nothing) ? (summary + (C ? ", Text to be continued" : "")): ("[Reassembled Data Segment] " + summary));
+        }
+    }
+
+    // [RFC 3720] 10.11.  Text Response
+    message TextResponse : NegotiationMessage
+    {
+        // Basic Header Segment (BHS)
+        byte Reserved with BinaryEncoding{Width = 2};
+        (Opcodes where value == Opcodes.TextResponse) Opcode with BinaryEncoding{Width = 6};
+        
+        bool F with BinaryEncoding{Width = 1};
+        bool C where ValidationCheck((C && !F) || (!C), this, "If the C bit set to 1, must not have the F bit set to 1.")
+            with BinaryEncoding{Width = 1};
+        uint Reserved2 with BinaryEncoding{Width = 22};
+        
+        byte TotalAHSLength where ValidationCheck(value == 0, this, "This PDU TotalAHSLength must be zero.");
+        uint DataSegmentLength with BinaryEncoding{Width = 24};
+        long LogicalUnitNumber;
+        uint InitiatorTaskTag;
+        uint TargetTransferTag;
+        uint CmdSN;
+        uint ExpStatSN;
+        array<byte> Reserved4 with BinaryEncoding{Length = 16};
+        
+        // Optional Fields, ingnored the decoding for the existence and type of digests are negotiated during the Login Phase.
+        optional uint HeaderDigest with Encoding{Ignore = true};
+        (binary | map<string, string> | any) Text with Encoding{Ignore = true};
+        optional array<byte> Padding with Encoding{Ignore = true};
+        optional uint DataDigest with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            string summary = "Text Response";
+            return ((this#IsReassembled == nothing)? (summary + (C ? ", Text to be continued" : "")): ("[Reassembled Data Segment] " + summary));
+        }
+    }
+    
+    // [RFC 3720] 10.12.  Login Request
+    message LoginRequest : NegotiationMessage
+    {
+        // Basic Header Segment (BHS)
+        byte Reserved1 with BinaryEncoding{Width = 1};
+        bool I with BinaryEncoding{Width = 1};
+        (Opcodes where value == Opcodes.LoginRequest) Opcode with BinaryEncoding{Width = 6};
+        
+        bool T with BinaryEncoding{Width = 1};
+        bool C where ValidationCheck((C && !T) || (!C), this, "If the C bit set to 1, must not have the T bit set to 1.")
+            with BinaryEncoding{Width = 1};
+        byte Reserved2 with BinaryEncoding{Width = 2};
+        byte Csg with BinaryEncoding{Width = 2};
+        byte Nsg with BinaryEncoding{Width = 2};
+        
+        byte VersionMax;
+        byte VersionMin;
+        byte TotalAHSLength where ValidationCheck(value == 0, this, "This PDU TotalAHSLength must be zero.");
+        uint DataSegmentLength with BinaryEncoding{Width = 24};
+        Isid Isid;
+        ushort Tsih;
+        uint InitiatorTaskTag;
+        uint Cid with BinaryEncoding{Width = 24};
+        byte Reserved3;
+        uint CmdSN;
+        uint ExpStatSN;
+        array<byte> Reserved4 with BinaryEncoding{Length = 16};
+        (binary | map<string, string> | any) LoginParameters with Encoding{Ignore = true};
+        optional array<byte> Padding with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            string summary = "Login Request, Current Stage = " + StageCodesToText(Csg) + 
+                    ", Next Stage = " + StageCodesToText(Nsg);
+            if (this#IsReassembled == nothing)
+            {
+                return summary + (C ? ", Text to be continued" : "");
+            }
+            else
+            {
+                return "[Reassembled Data Segment] " + summary;
+            }
+        }
+    }
+    
+    // [RFC 3720] 10.13.  Login Response
+    message LoginResponse : NegotiationMessage
+    {
+        // Basic Header Segment (BHS)
+        byte Reserved1 with BinaryEncoding{Width = 1};
+        bool I with BinaryEncoding{Width = 1};
+        (Opcodes where value == Opcodes.LoginResponse) Opcode with BinaryEncoding{Width = 6};
+        
+        bool T with BinaryEncoding{Width = 1};
+        bool C where ValidationCheck((C && !T) || (!C), this, "If the C bit set to 1, must not have the T bit set to 1.")
+            with BinaryEncoding{Width = 1};
+        byte Reserved2 with BinaryEncoding{Width = 2};
+        byte Csg with BinaryEncoding{Width = 2};
+        byte Nsg with BinaryEncoding{Width = 2};
+        
+        byte VersionMax;
+        byte VersionMin;
+        byte TotalAHSLength where ValidationCheck(value == 0, this, "This PDU TotalAHSLength must be zero.");
+        uint DataSegmentLength with BinaryEncoding{Width = 24};
+        Isid Isid;
+        ushort Tsih;
+        uint InitiatorTaskTag;
+        uint Cid with BinaryEncoding{Width = 24};
+        byte Reserved3;
+        uint CmdSN;
+        uint ExpStatSN;
+        uint MaxCmdSN;
+        byte StatusClass where ErrorCodeIf(value in {2, 3}, this, DiagnosisLevel.Error, "Login error");
+        byte StatusDetails;
+        array<byte> Reserved4 with BinaryEncoding{Length = 10};
+        (binary | map<string, string> | any) LoginParameters with Encoding{Ignore = true};
+        optional array<byte> Padding with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            string summary = (T ? (Nsg == 3 ? "Final ": ""): "Partial ") +
+                    "Login Response, Status = " + (StatusClassesMap.Keys[StatusClass] ? StatusClassesMap[StatusClass] : StatusClass as string);
+            if (this#IsReassembled == nothing)
+            {
+                return  summary + (C ? ", Text to be continued" : "");
+            }
+            else
+            {
+                return "[Reassembled Data Segment] " + summary;
+            }
+        }
+    }
+    
+    // [RFC 3720] 10.14.  Logout Request
+    message LogoutRequest
+    {
+        // Basic Header Segment (BHS)
+        byte Reserved1 with BinaryEncoding{Width = 1};
+        bool I with BinaryEncoding{Width = 1};
+        (Opcodes where value == Opcodes.LogoutRequest) Opcode with BinaryEncoding{Width = 6};
+        
+        bool F where ValidationCheck(value == true, this, "The F bit should be set.") with BinaryEncoding{Width = 1};
+        byte ReasonCode with BinaryEncoding{Width = 7};
+        
+        array<byte> Reserved2 with BinaryEncoding{Length = 2};
+        byte TotalAHSLength where ValidationCheck(value == 0, this, "This PDU TotalAHSLength must be zero.");
+        uint DataSegmentLength where ValidationCheck(value == 0, this, "This PDU DataSegmentLength must be zero.") with BinaryEncoding{Width = 24};
+        array<byte> Reserved3 with BinaryEncoding{Length = 8};
+        uint InitiatorTaskTag;
+        ushort Cid;
+        array<byte> Reserved4 with BinaryEncoding{Length = 2};
+        uint CmdSN;
+        uint ExpStatSN;
+        array<byte> Reserved5 with BinaryEncoding{Length = 16};
+        
+        // Optional Fields, ingnored the decoding for the existence and type of digests are negotiated during the Login Phase.
+        optional uint HeaderDigest with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            return "Logout Request, ReasonCode = " + (ReasonCodesMap.Keys[ReasonCode]? ReasonCodesMap[ReasonCode] : ReasonCode as string);
+        }
+    }
+    
+    // [RFC 3720] 10.15.  Logout Response
+    message LogoutResponse
+    {
+        // Basic Header Segment (BHS)
+        byte Reserved1 with BinaryEncoding{Width = 2};
+        (Opcodes where value == Opcodes.LogoutResponse) Opcode with BinaryEncoding{Width = 6};
+        
+        bool F where ValidationCheck(value == true, this, "The F bit should be set.") with BinaryEncoding{Width = 1};
+        byte Reserved2 with BinaryEncoding{Width = 7};
+        
+        byte Response;
+        byte Reserved3;
+        byte TotalAHSLength where ValidationCheck(value == 0, this, "This PDU TotalAHSLength must be zero.");
+        uint DataSegmentLength where ValidationCheck(value == 0, this, "This PDU DataSegmentLength must be zero.") with BinaryEncoding{Width = 24};
+        array<byte> Reserved4 with BinaryEncoding{Length = 8};
+        uint InitiatorTaskTag;
+        array<byte> Reserved5 with BinaryEncoding{Length = 4};
+        uint StatSN;
+        uint ExpCmdSN;
+        uint MaxCmdSN;
+        array<byte> Reserved6 with BinaryEncoding{Length = 4};
+        ushort Time2Wait;
+        ushort Time2Retain ;
+        array<byte> Reserved7 with BinaryEncoding{Length = 4};
+        
+        // Optional Fields, ingnored the decoding for the existence and type of digests are negotiated during the Login Phase.
+        optional uint HeaderDigest with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            return "Logout Response, Response = " + (LogoutResponseMap.Keys[Response]? LogoutResponseMap[Response] : Response as string);
+        }
+    }
+    
+    // [RFC 3720] 10.16.  Snack Request
+    message SnackRequest : FeatureMessage
+    {
+        // Basic Header Segment (BHS)
+        byte Reserved1 with BinaryEncoding{Width = 2};
+        (Opcodes where value == Opcodes.SnackRequest) Opcode with BinaryEncoding{Width = 6};
+        
+        bool F where ValidationCheck(value == true, this, "The F bit should be set.") with BinaryEncoding{Width = 1};
+        bool Reserved2 with BinaryEncoding{Width = 3};
+        byte Type with BinaryEncoding{Width = 4};
+        
+        array<byte> Reserved3 with BinaryEncoding{Length = 2};
+        byte TotalAHSLength where ValidationCheck(value == 0, this, "This PDU TotalAHSLength must be zero.");
+        uint DataSegmentLength where ValidationCheck(value == 0, this, "This PDU DataSegmentLength must be zero.") with BinaryEncoding{Width = 24};
+        ulong LogicalUnitNumber;
+        uint InitiatorTaskTag where ValidationCheck((value == 0xffffffff && Type in {SnackRequestType.StatusSnack, SnackRequestType.DataAck}) || !(Type in {SnackRequestType.StatusSnack, SnackRequestType.DataAck}),
+            null, DiagnosisLevel.Error, "iSCSI: The InitiatorTaskTag in message SnackRequest must be set to 0xffffffff when Status is one of SNACK and DataACK.");
+        uint TargetTransferTag where ValidationCheck((value == 0xffffffff && !(Type in {SnackRequestType.RDataSnack, SnackRequestType.DataAck})) || Type in {SnackRequestType.RDataSnack, SnackRequestType.DataAck},
+            null, DiagnosisLevel.Error, "iSCSI: The TargetTransferTag in message SnackRequest must be set to 0xffffffff when Status is not one of RDataSnack and DataAck.");
+        array<byte> Reserved4 with BinaryEncoding{Length = 4};
+        uint ExpStatSN;
+        array<byte> Reserved5 with BinaryEncoding{Length = 8};
+        uint BegRun;
+        uint RunLength;
+        
+        // Optional Fields, ingnored the decoding for the existence and type of digests are negotiated during the Login Phase.
+        optional uint HeaderDigest with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            return "Snack Request, Type = " + (SnackRequestTypesMap.Keys[Type]? SnackRequestTypesMap[Type] : Type as string);
+        }
+    }
+    
+    // [RFC 3720] 10.17.  Reject
+    message Reject : FeatureMessage
+    {
+        // Basic Header Segment (BHS)
+        byte Reserved1 with BinaryEncoding{Width = 2};
+        (Opcodes where value == Opcodes.Reject) Opcode with BinaryEncoding{Width = 6};
+        
+        bool F where ValidationCheck(value == true, this, "The F bit should be set.") with BinaryEncoding{Width = 1};
+        uint Reserved2 with BinaryEncoding{Width = 7};
+        
+        byte Reason;
+        byte Reserved3;
+        byte TotalAHSLength where ValidationCheck(value == 0, this, "This PDU TotalAHSLength must be zero.");
+        uint DataSegmentLength with BinaryEncoding{Width = 24};
+        array<byte> Reserved4 with BinaryEncoding{Length = 8};
+        uint InitiatorTaskTag where ValidationCheck(value == 0xffffffff, this, "The InitiatorTaskTag must be 0xffffffff.");
+        array<byte> Reserved5 with BinaryEncoding{Length = 4};
+        uint StatSN;
+        uint ExpStatSN;
+        uint MaxCmdSN;
+        uint DataSNOrR2TSN;
+        array<byte> Reserved6 with BinaryEncoding{Length = 8};
+        
+        // Optional Fields, ingnored the decoding for the existence and type of digests are negotiated during the Login Phase.
+        optional uint HeaderDigest with Encoding{Ignore = true};
+        binary CompleteHeaderOfBadPDU with Encoding{Ignore = true};
+        binary VendorSpecificData with Encoding{Ignore = true};
+        optional array<byte> Padding with Encoding{Ignore = true};
+        optional uint DataDigest with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            return "Reject, Reason = " + (RejectReasonsMap.Keys[Reason]? RejectReasonsMap[Reason] : Reason as string);
+        }
+    }
+    
+    // [RFC 3720] 10.18.  NOP-Out
+    message NopOut : FeatureMessage
+    {
+        // Basic Header Segment (BHS) 
+        byte Reserved1 with BinaryEncoding{Width = 1};
+        bool I with BinaryEncoding{Width = 1};
+        (Opcodes where value == Opcodes.NopOut) Opcode with BinaryEncoding{Width = 6};
+        
+        bool F where ValidationCheck(value == true, this, "The F bit should be set.") with BinaryEncoding{Width = 1};
+        uint Reserved2 with BinaryEncoding{Width = 23};
+        
+        byte TotalAHSLength where ValidationCheck(value == 0, this, "This PDU TotalAHSLength must be zero.");
+        uint DataSegmentLength with BinaryEncoding{Width = 24};
+        ulong LogicalUnitNumber;
+        uint InitiatorTaskTag where ValidationCheck(value != 0xffffffff || I, this, "If the Initiator Task Tag contains 0xffffffff, the I bit must be set to 1.");
+        uint TargetTransferTag;
+        uint CmdSN;
+        uint ExpStatSN;
+        array<byte> Reserved3 with BinaryEncoding{Length = 16};
+        
+        // Optional Fields, ingnored the decoding for the existence and type of digests are negotiated during the Login Phase.
+        optional uint HeaderDigest with Encoding{Ignore = true};
+        optional binary PingData with Encoding{Ignore = true};
+        optional array<byte> Padding with Encoding{Ignore = true};
+        optional uint DataDigest with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            return "NOP-Out";
+        }
+    }
+    
+    // [RFC 3720] 10.19.  NOP-In
+    message NopIn : FeatureMessage
+    {
+        // Basic Header Segment (BHS) 
+        byte Reserved1 with BinaryEncoding{Width = 2};
+        (Opcodes where value == Opcodes.NopIn) Opcode with BinaryEncoding{Width = 6};
+        
+        bool F where ValidationCheck(value == true, this, "The F bit should be set.") with BinaryEncoding{Width = 1};
+        uint Reserved2 with BinaryEncoding{Width = 23};
+        
+        byte TotalAHSLength where ValidationCheck(value == 0, this, "This PDU TotalAHSLength must be zero.");
+        uint DataSegmentLength with BinaryEncoding{Width = 24};
+        ulong LogicalUnitNumber;
+        uint InitiatorTaskTag;
+        uint TargetTransferTag;
+        uint StatSN;
+        uint ExpStatSN;
+        uint MaxCmdSN;
+        array<byte> Reserved3 with BinaryEncoding{Length = 12};
+        
+        // Optional Fields, ingnored the decoding for the existence and type of digests are negotiated during the Login Phase.
+        optional uint HeaderDigest with Encoding{Ignore = true};
+        optional binary PingData with Encoding{Ignore = true};
+        optional array<byte> Padding with Encoding{Ignore = true};
+        optional uint DataDigest with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            return "NOP-In";
+        }
+    }
+    
+    // 10.  iSCSI PDU Formats
+    message VendorSpecificMessage : FeatureMessage
+    {
+        // Basic Header Segment (BHS) 
+        byte Reserved1 with BinaryEncoding{Width = 1};
+        bool I with BinaryEncoding{Width = 1};
+        (Opcodes where (value >= 0x1c && value <= 0x1e) || (value >= 0x3c && value <= 0x3e)) Opcode with BinaryEncoding{Width = 6};
+        
+        bool F where ValidationCheck(value == true, this, "The F bit should be set.") with BinaryEncoding{Width = 1};
+        uint OpcodeSpecificFields1 with BinaryEncoding{Width = 23};
+        
+        byte TotalAHSLength;
+        uint DataSegmentLength with BinaryEncoding{Width = 24};
+        Blob[40] OpcodeSpecificFields2;
+        
+        // Optional Fields
+        // Will limit the data to the expected array size in the message decoding.
+        optional [| TotalAHSLength > 0 |] array<AdditionalHeaderSegment> AHS;
+        // Ingnored the decoding for the existence and type of digests are negotiated during the Login Phase.
+        optional uint HeaderDigest with Encoding{Ignore = true};
+        optional binary DataSegment with Encoding{Ignore = true};
+        optional array<byte> Padding with Encoding{Ignore = true};
+        optional uint DataDigest with Encoding{Ignore = true};
+        
+        // Message summary
+        override string ToString()
+        {
+            return "Vendor Specific, Opcode = " + (Opcode as string);
+        }
+    }
+}
+
+//--------------------------------------------
+// Static contst
+
+// Mapping the value GROUP CODE field to the lenth of CDB
+const map<byte, byte> GroupCodeMap = {
+        0 -> 6,
+        1 -> 10,
+        2 -> 10,
+        4 -> 16,
+        5 -> 12
+    };
+
+// Defines for the message summary
+const map<byte, string> CommandOperationCodeMap = {
+        0x04 -> "Format Unit",
+        0x8b -> "Or Write",
+        0x34 -> "PreFetch(10)",
+        0x90 -> "PreFetch(16)",
+        0x1E -> "Prevent Allow MediumRemoval",
+        0x08 -> "Read(6)",
+        0x28 -> "Read(10)",
+        0xA8 -> "Read(12)",
+        0x88 -> "Read(16)",
+        0x25 -> "Read Capacity(10)",
+        0x37 -> "Read Defect Data(10)",
+        0xB7 -> "Read Defect Data(12)",
+        0x3E -> "Read Long(10)",
+        0x07 -> "Reassign Blocks",
+        0x1B -> "Start Stop Unit",
+        0x35 -> "Synchronize Cache(10)",
+        0x91 -> "Synchronize Cache(16)",
+        0x2F -> "Verify(10)",
+        0xAF -> "Verify(12)",
+        0x8F -> "Verify(16)",
+        0x0A -> "Write(6)",
+        0x2A -> "Write(10)",
+        0xAA -> "Write(12)",
+        0x8A -> "Write(16)",
+        0x2E -> "Write And Verify(10)",
+        0xAE -> "Write And Verify(12)",
+        0x8E -> "Write And Verify(16)",
+        0x3F -> "Write Long(10)",
+        0x9F -> "Write Long(16)",
+        0x41 -> "Write Same(10)",
+        0x93 -> "Write Save(16)",
+        0x52 -> "XD Read(10)",
+        0x50 -> "XD Write(10)",
+        0x53 -> "XD Write Read(10)",
+        0x51 -> "XP Write(10)",
+        0x40 -> "Change Definition",
+        0x15 -> "Mode Select(6)",
+        0x55 -> "Mode Select(10)",
+        0x1A -> "Mode Sense(6)",
+        0x5A -> "Mode Sense(10)",
+        0x5E -> "Persistent Reserve In",
+        0x5F -> "Persistent Reserve Out",
+        0x3C -> "Read Buffer",
+        0x17 -> "Release(6)",
+        0x57 -> "Release(10)",
+        0x12 -> "Inquiry",
+        0x4C -> "Log Select",
+        0x4D -> "Log Sense",
+        0x1C -> "Receive Diagnostic Results",
+        0xA3 -> "Report Related",
+        0xA0 -> "Report Luns",
+        0x03 -> "Report Sense",
+        0x1D -> "Send Diagnostic",
+        0x00 -> "Test Unit Ready",
+    };
+
+const map<byte, string> StatusMap = {
+        0x00 -> "Good",
+        0x02 -> "Check Condition",
+        0x08 -> "Busy",
+        0x18 -> "Reservation Conflict",
+        0x28 -> "Task Set Full",
+        0x30 -> "Aca Active",
+        0x40 -> "Task Aborted",
+    };
+    
+const map<byte, string> TaskManagementFunctionsMap = {
+        1 -> "Abort Task",
+        2 -> "Abort Task Set",
+        3 -> "Clear Aca",
+        4 -> "Clear Task Set",
+        5 -> "Logical Unit Reset",
+        6 -> "Target Warm Reset",
+        7 -> "Target Cold Reset",
+        8 -> "Task Reassign",
+    };
+    
+const map<byte, string> TaskManagementFunctionResponseMap = {
+        0 -> "Function complete",
+        1 -> "Task does not exist",
+        2 -> "LUN does not exist",
+        3 -> "Task still allegiant",
+        4 -> "Task allegiance reassignment not supported",
+        5 -> "Task management function not supported",
+        6 -> "Function authorization failed",
+        255 -> "Function rejected",
+    };
+
+const map<byte, string> AsyncEventMap = {
+        0 -> "Reported in the sense data",
+        1 -> "Requests Logout",
+        2 -> "Drop the connection",
+        3 -> "Drop all the connections of this session",
+        4 -> "Requests parameter negotiation on this connection",
+        255 -> "Vendor specific iSCSI Event",
+    };
+    
+const map<byte, string> StageCodesMap = {
+        0 -> "SecurityNegotiation",
+        1 -> "LoginOperationalNegotiation",
+        3 -> "FullFeaturePhase",
+        // All other values are reserved.
+    };
+
+const map<byte, string> StatusClassesMap  = { 
+        0 -> "Success",
+        1 -> "Redirection",
+        2 -> "Initiator Error",
+        3 -> "Target Error",
+    };
+
+const map<byte, string> ReasonCodesMap  = { 
+        0 -> "Close the session",
+        1 -> "Close the connection",
+        2 -> "Remove the connection for recovery",
+        // All other values are reserved.
+     };
+
+const map<byte, string> LogoutResponseMap = {
+        0 -> "Connection or session closed successfully",
+        1 -> "CID not found",
+        2 -> "Connection recovery is not supported",
+        3 -> "Cleanup failed for various reasons",
+     };
+     
+const map<byte, string> SnackRequestTypesMap = {
+        0 -> "DataOrR2TSnack",
+        1 -> "StatusSnack",
+        2 -> "DataAck",
+        3 -> "RDataSnack",
+    };
+    
+const map<byte, string> RejectReasonsMap = {
+        0x01 -> "Reserved",
+        0x02 -> "Data (payload) Digest Error",
+        0x03 -> "SNACK Reject",
+        0x04 -> "Protocol Error",
+        0x05 -> "Command not supported",
+        0x06 -> "Immediate Command Reject",
+        0x07 -> "Task in progress",
+        0x08 -> "Invalid Data ACK",
+        0x09 -> "Invalid PDU field",
+        0x0a -> "Long Operation Reject",
+        0x0b -> "Negotiation Reset",
+        0x0c -> "Waiting for Logout",
+    };
+
+//-------------------------------------------
+// Data types
+    
+// [RFC 3720] 10.2.1.2.  Opcode
+pattern Opcodes = enum byte
+    {
+        // Initiator opcode
+        NopOut = 0x00,
+        ScsiCommand = 0x01,
+        ScsiTaskManagementFunctionRequest = 0x02,
+        LoginRequest = 0x03,
+        TextRequest = 0x04,
+        ScsiDataOut = 0x05,
+        LogoutRequest = 0x06,
+        SnackRequest = 0x10,
+        VendorSpecificCodeI0 = 0x1c,
+        VendorSpecificCodeI1 = 0x1d,
+        VendorSpecificCodeI2 = 0x1e,
+        // Target opcode
+        NopIn = 0x20,
+        ScsiResponse =  0x21,
+        ScsiTaskManagementFunctionResponse = 0x22,
+        LoginResponse = 0x23,
+        TextResponse = 0x24,
+        ScsiDataIn = 0x25,
+        LogoutResponse = 0x26,
+        ReadyToTransfer = 0x31,
+        AsynchronousMessage = 0x32,
+        VendorSpecificCodesT0 = 0x3c,
+        VendorSpecificCodesT1 = 0x3d,
+        VendorSpecificCodesT2 = 0x3e,
+        Reject =  0x3f
+    };
+    
+// [RFC 3720] 10.2.2.  Additional Header Segment (AHS)
+pattern AdditionalHeaderSegment = ExtendedCDBAHS | BidirectionalExpectedReadDataLengthAHS | ReservedAHS;
+
+type ReservedAHS
+{
+    ushort AHSLength;
+    byte AHSType;
+    byte Reserved;
+    
+    binary AHSSpecifc with BinaryEncoding{Length = AHSLength - 1 as uint};
+    optional [| (AHSLength - 1) % 4 > 0 |] array<byte> Padding with BinaryEncoding{Length = 4 - (AHSLength - 1) % 4 as uint};
+}
+
+type AHSType
+{
+    byte Reserved with BinaryEncoding{Width = 2};
+    byte AHSCode with BinaryEncoding{Width = 6};
+}
+
+pattern AHSCode = enum byte
+    {
+        ExtendedCDB = 1,
+        ExpectedBidirectionalReadDataLength = 2,
+        // Other value is reserved
+    };
+
+// [RFC 3720] 10.2.2.3.  Extended CDB AHS
+type ExtendedCDBAHS
+{
+    ushort AHSLength;
+    (AHSType where value.AHSCode is AHSCode.ExtendedCDB) AHSType;
+    byte Reserved;
+    
+    binary ExtendedCDB with BinaryEncoding{Length = AHSLength - 1 as uint};
+    optional [| (AHSLength - 1) % 4 > 0 |] array<byte> Padding with BinaryEncoding{Length = 4 - (AHSLength - 1) % 4 as uint};
+}
+        
+// [RFC 3720] 10.2.2.4. Bidirectional Expected Read-Data Length AHS
+type BidirectionalExpectedReadDataLengthAHS
+{
+    ushort AHSLength where value == 0x0005;
+    (AHSType where value.AHSCode is AHSCode.ExpectedBidirectionalReadDataLength) AHSType;
+    byte Reserved;
+    
+    uint ExpectedReadDataLength;
+}
+
+// [RFC 3720] 10.3.1. Flags and Task Attributes
+type ScsiCommandFlagsAndTaskAttributes
+{
+    bool F with BinaryEncoding{Width = 1};
+    bool R with BinaryEncoding{Width = 1};
+    bool W with BinaryEncoding{Width = 1};
+    byte Reserved1 with BinaryEncoding{Width = 2};
+    TaskAttributesPattern ATTR with BinaryEncoding{Width = 3};
+}
+
+pattern TaskAttributesPattern = enum byte
+    {
+        Untagged = 0,
+        Simple = 1,
+        Ordered = 2,
+        HeaderOfQueue = 3,
+        ACA = 4,
+        Reserved5 = 5,
+        Reserved6 = 6,
+        Reserved7 = 7
+    };
+
+// [RFC 3720] 10.4.1. Flags
+type ScsiResponseFlags
+{
+    bool F where ValidationCheck(value == true, null, "The F bit should be set.") with BinaryEncoding{Width = 1};
+    byte Reserved1 with BinaryEncoding{Width = 2};
+    bool BidirectionalReadResidualOverflow with BinaryEncoding{Width = 1};
+    bool BidirectionalReadResidualUnderflow with BinaryEncoding{Width = 1};
+    bool ResidualOverflow with BinaryEncoding{Width = 1};
+    bool ResidualUnderflow with BinaryEncoding{Width = 1};
+    bool Reserved2 with BinaryEncoding{Width = 1};
+}
+
+// [RFC 3720] 10.4.2.  Status
+pattern Status = enum byte
+    {
+         Good = 0x00,
+         CheckCondition = 0x02,
+         Busy = 0x08,
+         ReservationConflict = 0x18,
+         TaskSetFull = 0x28,
+         AcaActive = 0x30,
+         TaskAborted = 0x40
+    };
+
+string StatusToText(Status status)
+{
+    if (StatusMap.Keys[status])
+    {
+        return StatusMap[status];
+    }
+    else
+    {
+        return "Unknown Value_" + (status as string);
+    }
+}
+
+// [RFC 3720] 10.4.3.  Response
+pattern ResponseByte = enum byte
+    {
+        CommandCompletedAtTarget = 0x00,
+        TargetFailure = 0x01
+        // other is reserved
+    };
+
+// [RFC 3720] 10.4.1. Flags
+pattern TaskManagementFunctions = enum byte
+    {
+        AbortTask = 1,
+        AbortTaskSet = 2,
+        ClearAca = 3,        
+        ClearTaskSet = 4,
+        LogicalUnitReset = 5,
+        TargetWarmReset = 6,
+        TargetColdReset = 7,
+        TaskReassign = 8,
+    };
+
+type SenseAndResponseDataSegment[uint DataSegmentLength]
+{
+    ushort SenseLength;
+    Blob[SenseLength as uint] SenseData;
+    optional [| DataSegmentLength - SenseLength - 2 > 0 |] binary ResponseData with BinaryEncoding{Length = DataSegmentLength - SenseLength - 2};
+    
+    // The Data Segment is also padded to an integer number of 4 byte words.
+    optional array<byte> Padding with BinaryEncoding{Length = 4 - DataSegmentLength % 4 as uint};
+}
+
+// [RFC 3720] 10.7.3.  Flags (byte 1)
+type ScsiDataInFlags
+{
+    bool F with BinaryEncoding{Width = 1};
+    bool A with BinaryEncoding{Width = 1};
+    byte Reserved with BinaryEncoding{Width = 3};
+    bool ResidualOverflow with BinaryEncoding{Width = 1};
+    bool ResidualUnderflow with BinaryEncoding{Width = 1};
+    bool S where ValidationCheck((F & S) | (!S), null, "If this bit is set to 1, the F bit must also be set to 1.") with BinaryEncoding{Width = 1};
+}
+
+// [RFC 3720] 10.9.4.  Sense Data and iSCSI Event Data
+type SenseDataAndiSCSIEventData[uint DataSegmentLength]
+{
+    ushort SenseLength;
+    Blob[SenseLength as uint] SenseData;
+    optional [| DataSegmentLength - SenseLength - 2 > 0 |] binary iSCSIEventData with BinaryEncoding{Length = DataSegmentLength - SenseLength - 2};
+    
+    // The Data Segment is also padded to an integer number of 4 byte words.
+    optional array<byte> Padding with BinaryEncoding{Length = 4 - DataSegmentLength % 4 as uint};
+}
+
+// [RFC 3720] 10.12.5.  ISID
+pattern Isid = IsidOui | IsidEN | IsidRandom | IsidRerserved;
+
+pattern IsidT = enum byte
+    {
+        Oui =0,
+        EN =1,
+        Random =2,
+        Reserved =3,
+    };
+        
+type IsidOui
+{
+    (IsidT where value == IsidT.Oui) T with BinaryEncoding{Width = 2};
+    uint Oui with BinaryEncoding{Width = 22};
+    uint Qualifier with BinaryEncoding{Width = 24};
+}
+ 
+type IsidEN
+{
+    (IsidT where value == IsidT.EN) T with BinaryEncoding{Width = 2};
+    byte Reserved with BinaryEncoding{Width = 6};
+    uint IanaEnterpriseNumber with BinaryEncoding{Width = 24};
+    ushort Qualifier;
+}
+
+type IsidRandom
+{
+    (IsidT where value == IsidT.Reserved) T with BinaryEncoding{Width = 2};
+    byte Reserved with BinaryEncoding{Width = 6};
+    uint Random with BinaryEncoding{Width = 24};
+    ushort Qualifier;
+}
+
+type IsidRerserved
+{
+    (IsidT where value == IsidT.Random) T with BinaryEncoding{Width = 2};
+    ulong Reserved with BinaryEncoding{Width = 46};
+}
+
+// [RFC 3720] 10.16.1.  Type
+pattern SnackRequestType = enum byte
+    {
+        DataOrR2TSnack = 0,
+        StatusSnack = 1,
+        DataAck = 2,
+        RDataSnack = 3,
+    };
+
+// [SAM2] 5.2 Command descriptor block (CDB)
+type ScsiCommandDescriptorBlock
+{
+    (OperationCode where value.Value != CommandOperationCode.VariableLength) OperationCode;
+    // Command specific parameters
+    ([| OperationCode.Value == CommandOperationCode.FormatUnit |] FormatUnitCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.OrWrite |] OrWriteCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.PreFetch10 |] PreFetch10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.PreFetch16 |] PreFetch16CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.PreventAllowMediumRemoval |] PreventAllowMediumRemovalCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.Read6 |] Read6CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.Read10 |] Read10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.Read12 |] Read12CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.Read16 |] Read16CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.ReadCapacity10 |] ReadCapacity10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.OperationCode9E |] OperationCode9ECommandParameters |
+        [| OperationCode.Value == CommandOperationCode.ReadDefectData10 |] ReadDefectData10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.ReadDefectData12 |] ReadDefectData12CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.ReadLong10 |] ReadLong10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.ReassignBlocks |] ReassignBlocksCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.StartStopUnit |] StartStopUnitCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.SynchronizeCache10 |] SynchronizeCache10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.SynchronizeCache16 |] SynchronizeCache16CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.Verify10 |] Verify10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.Verify12 |] Verify12CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.Verify16 |] Verify16CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.Write6 |] Write6CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.Write10 |] Write10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.Write12 |] Write12CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.Write16 |] Write16CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.WriteAndVerify10 |] WriteAndVerify10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.WriteAndVerify12 |] WriteAndVerify12CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.WriteAndVerify16 |] WriteAndVerify16CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.WriteLong10 |] WriteLong10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.WriteLong16 |] WriteLong16CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.WriteSame10 |] WriteSame10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.WriteSave16 |] WriteSave16CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.XDRead10 |] XDRead10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.XDWrite10 |] XDWrite10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.XDWriteRead10 |] XDWriteRead10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.XPWrite10 |] XPWrite10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.ChangeDefinition |] ChangeDefinitionCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.ModeSelect6 |] ModeSelect6CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.ModeSelect10 |] ModeSelect10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.ModeSense6 |] ModeSense6CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.ModeSense10 |] ModeSense10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.PersistentReserveIn |] PersistentReserveInCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.PersistentReserveOut |] PersistentReserveOutCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.ReadBuffer |] ReadBufferCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.Release6 |] Release6CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.Release10 |] Release10CommandParameters |
+        [| OperationCode.Value == CommandOperationCode.Inquiry |] InquiryCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.LogSelect |] LogSelectCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.LogSense |] LogSenseCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.ReceiveDiagnosticResults |] ReceiveDiagnosticResultsCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.ReportA3 |] ReportCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.ReportLuns |] ReportLunsCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.ReportSense |] ReportSenseCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.SendDiagnostic |] SendDiagnosticCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.TestUnitReady |] TestUnitReadyCommandParameters |
+        [| OperationCode.Value == CommandOperationCode.WriteBuffer |] WriteBufferCommandParameters |
+        Blob[CDBLength() - 2 as uint]) CommandSpecificParameters;
+
+    Control Control;
+    optional [| 16 - CDBLength() > 0 |] array<byte> Padding with BinaryEncoding{Length = 16 - CDBLength() as uint};
+    
+    // Caculate the padding bytes by the GroupCode
+    byte CDBLength()
+    {
+        byte code = OperationCode.GroupCode;
+        if (GroupCodeMap.Keys[code])
+        {
+            return GroupCodeMap[code];
+        }
+        else
+        {
+            return 16;
+        }
+    }
+    
+    // For summary
+    override string ToString()
+    {
+        byte op = OperationCode.Value;
+        if (CommandOperationCodeMap.Keys[op])
+        {
+            return CommandOperationCodeMap[op];
+        }
+        else
+        {      
+            switch (CommandSpecificParameters)
+            {
+                case ReadCapacity16CommandParameters =>
+                {
+                    return "Read Capacity(16)";
+                }
+                case ReadLong16CommandParameters =>
+                {
+                    return "Read Long(16)";
+                }
+                case ReportAliasesCommandParameters =>
+                {
+                    return "Report Aliases";
+                }
+                case ReportIdentifyingInformationCommandParameters =>
+                {
+                    return "Report Identifying Information";
+                }
+                case ReportPriorityCommandParameters =>
+                {
+                    return "Report Priority";
+                }
+                case ReportSupportedOperationCodesCommandParameters =>
+                {
+                    return "Report Supported Operation Codes";
+                }
+                case ReportSupportedTaskManagementFunctionsCommandParameters =>
+                {
+                    return "Report Supported Task Management Functions";
+                }
+                case ReportTargetPortGroupsCommandParameters =>
+                {
+                    return "Report Target Port Groups";
+                }
+                case ReportTimeStampCommandParameters =>
+                {
+                    return "Report Time Stamp";
+                }
+                default =>
+                {
+                    return "Unknown Value_" + (op as string);
+                }
+            }
+        }
+    }
+}
+
+// [SAM2] 5.2.2 OPERATION CODE
+type OperationCode
+{
+    GroupCode GroupCode with BinaryEncoding{Width = 3};
+    byte CommandCode with BinaryEncoding{Width = 5};
+    
+    // Commented off due to Bug#16615: Errors found when checking OPN syntax for a property-style notation by prefixing  a method declaration with the get or set modifier in type definition.
+    //byte get Value()
+    //{
+        //return (GroupCode << 5 + CommandCode) as byte;
+    //}
+}
+
+// WORKAROUND: For Bug#16615
+byte get Value(this OperationCode oc)
+{
+    return ((oc.GroupCode << 5) + oc.CommandCode) as byte;
+}
+
+pattern GroupCode = enum byte
+    {
+        Commands6Byte = 0,
+        Commands10Byte1 = 1,
+        Commands10Byte2 = 2,
+        Reserved  = 3,
+        Commands16Byte = 4,
+        Commands12Byte = 5,
+        VendorSpecific1 = 6,
+        VendorSpecific2 = 7
+    };
+
+pattern CommandOperationCode = enum byte
+    {
+        // SBC-3 commands
+        FormatUnit = 0x04,
+        OrWrite = 0x8b,
+        PreFetch10 = 0x34,
+        PreFetch16 = 0x90,
+        PreventAllowMediumRemoval = 0x1E,
+        Read6 = 0x08,
+        Read10 = 0x28,
+        Read12 = 0xA8,
+        Read16 = 0x88,
+        ReadCapacity10 = 0x25,
+        OperationCode9E = 0x9E, // Read Long (16), Read Capacity (16)
+        ReadDefectData10 = 0x37,
+        ReadDefectData12 = 0xB7,
+        ReadLong10 = 0x3E,
+        ReassignBlocks = 0x07,
+        StartStopUnit = 0x1B,
+        SynchronizeCache10 = 0x35,
+        SynchronizeCache16 = 0x91,
+        Verify10 = 0x2F,
+        Verify12 = 0xAF,
+        Verify16 = 0x8F,
+        Write6 = 0x0A,
+        Write10 = 0x2A,
+        Write12 = 0xAA,
+        Write16 = 0x8A,
+        WriteAndVerify10 = 0x2E,
+        WriteAndVerify12 = 0xAE,
+        WriteAndVerify16 = 0x8E,
+        WriteLong10 = 0x3F,
+        WriteLong16 = 0x9F,
+        WriteSame10 = 0x41,
+        WriteSave16 = 0x93,
+        XDRead10 = 0x52,
+        XDWrite10 = 0x50,
+        XDWriteRead10 = 0x53,
+        XPWrite10 = 0x51,
+        VariableLength = 0x7F,
+        // SPC-3 commands
+        ChangeDefinition = 0x40,
+        ModeSelect6 = 0x15,
+        ModeSelect10 = 0x55,
+        ModeSense6 = 0x1A,
+        ModeSense10 = 0x5A,
+        PersistentReserveIn = 0x5E,
+        PersistentReserveOut = 0x5F,
+        ReadBuffer = 0x3C,
+        Release6 = 0x17,
+        Release10 = 0x57,
+        Inquiry = 0x12,
+        LogSelect = 0x4C,
+        LogSense = 0x4D,
+        ReceiveDiagnosticResults = 0x1C,
+        ReportA3 = 0xA3,
+        ReportLuns = 0xA0,
+        ReportSense = 0x03,
+        SendDiagnostic = 0x1D,
+        TestUnitReady = 0x00,
+        WriteBuffer = 0x3B,
+    };
+
+// [SAM2] 5.2.3 CONTROL byte
+type Control
+{
+    byte VendorSpecific with BinaryEncoding{Width = 2};
+    byte Reserved with BinaryEncoding{Width = 3};
+    bool NACA with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    bool Link with BinaryEncoding{Width = 1};
+}
+
+// [SPC-2] 4.3.3 The variable length CDB formats
+type VariableLengthCommandDescriptorBlock
+{
+    OperationCode OperationCode where value.Value == CommandOperationCode.VariableLength;
+    Control Control;
+    (Read32CommandParameters
+    | Verify32CommandParameters
+    | Write32CommandParameters
+    | WriteAndVerify32CommandParameters
+    | WriteSame32CommandParameters
+    | XDRead32CommandParameters
+    | XDWrite32CommandParameters
+    | XDWriteRead32CommandParameters
+    | XPWrite32CommandParameters
+    | TypicalVariableLengthForLongLba32ByteCommandParameters
+    | TypicalVariableLengtheCommandParameters) CommandParameters;
+    
+    override string ToString()
+    {
+        switch (CommandParameters)
+        {
+            case Read32CommandParameters =>
+                return "Read(32)";
+            case Verify32CommandParameters =>
+                return "Verify(32)";
+            case Write32CommandParameters =>
+                return "Write(32)";
+            case WriteAndVerify32CommandParameters =>
+                return "Write And Verify(32)";
+            case WriteSame32CommandParameters =>
+                return "Write Same(32)";
+            case XDRead32CommandParameters =>
+                return "XD Read(32)";
+            case XDWrite32CommandParameters =>
+                return "XD Write(32)";
+            case XDWriteRead32CommandParameters =>
+                return "XD Write Read(32)";
+            case XPWrite32CommandParameters =>
+                return "XP Write(32)";
+            case TypicalVariableLengthForLongLba32ByteCommandParameters =>
+                return "Long LBA 32-Byte Command";
+            default =>
+                return "Vendor Specific Command";
+         }
+    }
+}
+
+// [SPC-2] Table 6 - Typical variable length CDB
+type TypicalVariableLengtheCommandParameters
+{
+    array<byte> Reserved with BinaryEncoding{Length = 5};
+    byte AdditionalCDBLength where ValidationCheck(value % 4 == 0, null, "This value in the AdditionalCDBLength field should be a multiple of 4.");
+    ushort ServiceAction ;
+    binary ServiceActionSpecificFields with BinaryEncoding{Length = AdditionalCDBLength - 2 as uint};
+}
+
+// [SPC-2] Table 7 - Typical variable length CDB for long LBA 32-byte commands
+type TypicalVariableLengthForLongLba32ByteCommandParameters
+{
+    array<byte> Reserved1 with BinaryEncoding{Length = 5};
+    (byte where value == 0x18) AdditionalCDBLength;
+    ushort ServiceAction ;
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    ushort Reserved3 with BinaryEncoding{Width = 11};
+    
+    ulong LogicalBlockAddress;
+    binary AdditionalCDBData with BinaryEncoding{Length = 8};
+    uint SpecificLength;
+}
+
+// [SBC-3] 5.2 Format Unit Command - OPERATION CODE (04h)
+type FormatUnitCommandParameters
+{
+    byte FmtPInfo with BinaryEncoding{Width = 2};
+    bool LongList with BinaryEncoding{Width = 1};
+    bool FmtData with BinaryEncoding{Width = 1};
+    bool Cmplst with BinaryEncoding{Width = 1};
+    byte DefectListFormat with BinaryEncoding{Width = 3};
+    
+    byte VendorSpecific;
+    array<byte> Obsolete with BinaryEncoding{Length = 2};
+}
+
+// [SBC-3] 5.3 ORWRITE command - OPERATION CODE (8bh)
+type OrWriteCommandParameters
+{
+    byte OrProtect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    bool Reserved1 with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 1};
+    
+    ulong LogicalBlockAddress;
+    uint TransferLength;
+    byte Reserved with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+}
+    
+// [SBC-3] 5.4 PRE-FETCH (10) command - OPERATION CODE (34h)
+type PreFetch10CommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 6};
+    bool IMMED with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    uint LogicalBlockAddress;
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    ushort PrefetchLength;
+}
+
+// [SBC-3] 5.5 PRE-FETCH (16) command - OPERATION CODE (90h)
+type PreFetch16CommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 6};
+    bool IMMED with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    ulong LogicalBlockAddress;
+    uint PrefetchLength;
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+}
+
+// [SBC-3] 5.6 PREVENT ALLOW MEDIUM REMOVAL command - OPERATION CODE (1Eh)
+type PreventAllowMediumRemovalCommandParameters
+{
+    uint Reserved with BinaryEncoding{Width = 30};
+    uint Prevent with BinaryEncoding{Width = 2};
+}
+
+// [SBC-3] 5.7 READ (6) command - OPERATION CODE (08h)
+type Read6CommandParameters
+{
+    uint Reserved with BinaryEncoding{Width = 3};
+    uint LogicalBlockAddress with BinaryEncoding{Width = 21};
+    byte TransferLength;
+}
+
+// [SBC-3] 5.8 READ (10) command - OPERATION CODE (28h)
+type Read10CommandParameters
+{
+    byte Protect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    byte Reserved1 with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 1};
+
+    uint LogicalBlockAddress;
+    byte Reserved with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    ushort TransferLength;
+}
+
+// [SBC-3] 5.9 READ (12) command  - OPERATION CODE (A8h)
+type Read12CommandParameters
+{
+    byte Protect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    bool Reserved1 with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+
+    uint LogicalBlockAddress;
+    uint TransferLength;
+    bool RestrictedForMMC6 with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 2};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+}
+
+// [SBC-3] 5.10 READ (16) command - OPERATION CODE (88h)
+type Read16CommandParameters
+{
+    byte Protect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    byte Reserved1 with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 1};
+    
+    ulong LogicalBlockAddress;
+    uint TransferLength;
+    
+    bool RestrictedForMMC6 with BinaryEncoding{Width = 1};
+    byte Reserved with BinaryEncoding{Width = 2};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+}
+     
+// [SBC-3] 5.11 READ (32) command - OPERATION CODE (7Fh)
+type Read32CommandParameters
+{
+    array<byte> Reserved1 with BinaryEncoding{Length = 4};
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    
+    (byte where value == 0x18) AdditionalCDBLength;
+    (ushort where value == 0x0009) ServiceAction ;
+    
+    byte Protect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    byte Reserved3 with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    ushort Reserved4 with BinaryEncoding{Width = 9};
+    
+    ulong LogicalBlockAddress;
+    uint ExpectedInitialLogicalBlockReferenceTag;
+    ushort ExpectedLogicalBlockApplicationTag;
+    ushort LogicalBlockApplicationTagMask;
+    uint TransferLength;
+}
+
+// [SBC-3] 5.12 READ CAPACITY (10) command - OPERATION CODE (25h)
+type ReadCapacity10CommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 7};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    uint LogicalBlockAddress;
+    uint Reserved2 with BinaryEncoding{Width = 23};
+    bool PMI with BinaryEncoding{Width = 1};
+}
+    
+// [SBC-3] 5.13 READ CAPACITY (16) command - OPERATION CODE (9Eh)
+type ReadCapacity16CommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    (byte where value == 0x10) ServiceAction with BinaryEncoding{Width = 5};
+    
+    ulong LogicalBlockAddress;
+    uint AllocationLength;
+    
+    byte Reserved2 with BinaryEncoding{Width = 7};
+    bool PMI with BinaryEncoding{Width = 1};
+}
+
+// [SBC-3] 5.14 READ DEFECT DATA (10) command - OPERATION CODE (37h)
+type ReadDefectData10CommandParameters
+{
+    ushort Reserved1 with BinaryEncoding{Width = 11};
+    bool ReqPList with BinaryEncoding{Width = 1};
+    bool ReqGList with BinaryEncoding{Width = 1};
+    byte DefectListFormat with BinaryEncoding{Width = 3};
+    
+    array<byte> Reserved2 with BinaryEncoding{Length = 4};
+    ushort AllocationLength;
+}
+ 
+// [SBC-3] 5.15 READ DEFECT DATA (12) command - OPERATION CODE (B7h)
+type ReadDefectData12CommandParameters
+{
+    ushort Reserved1 with BinaryEncoding{Width = 3};
+    bool ReqPList with BinaryEncoding{Width = 1};
+    bool ReqGList with BinaryEncoding{Width = 1};
+    byte DefectListFormat with BinaryEncoding{Width = 3};
+    
+    array<byte> Reserved2 with BinaryEncoding{Length = 4};
+    uint AllocationLength;
+    byte Reserved3;
+}
+     
+// [SBC-3] 5.16 READ LONG (10) command - OPERATION CODE (3Eh)
+type ReadLong10CommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 5};
+    bool PBSlock with BinaryEncoding{Width = 1};
+    bool Corrct with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    uint LogicalBlockAddress;
+    byte Reserved2;
+    ushort ByteTransferLength;
+}
+
+pattern OperationCode9ECommandParameters = ReadLong16CommandParameters | ReadCapacity16CommandParameters;
+
+// [SBC-3] 5.17 READ LONG (16) command - OPERATION CODE (9Eh)
+type ReadLong16CommandParameters
+{
+    bool Reserved with BinaryEncoding{Width = 3};
+    (byte where value == 0x11) ServiceAction  with BinaryEncoding{Width = 5};
+    
+    ulong LogicalBlockAddress;
+    array<byte> Reserved1 with BinaryEncoding{Length = 2};
+    ushort ByteTransferLength;
+    
+    byte Reserved2 with BinaryEncoding{Width = 6};
+    bool PBLock with BinaryEncoding{Width = 1};
+    bool Corrct with BinaryEncoding{Width = 1};
+}
+
+// [SBC-3] 5.18 REASSIGN BLOCKS command - OPERATION CODE (07h)
+type ReassignBlocksCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 6};
+    bool LongLBA with BinaryEncoding{Width = 1};
+    bool LongList with BinaryEncoding{Width = 1};
+    
+    byte Reserved2 with BinaryEncoding{Length = 3};
+}
+
+// [SBC-3] 5.19 START STOP UNIT command - OPERATION CODE (1Bh)
+type StartStopUnitCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 7};
+    bool Immed with BinaryEncoding{Width = 1};
+    
+    ushort Reserved with BinaryEncoding{Width = 12};
+    ushort PowerConditionModifier with BinaryEncoding{Width = 4};
+    
+    byte PowerCondition with BinaryEncoding{Width = 4};
+    byte Reserved2 with BinaryEncoding{Width = 1};
+    bool NoFlush with BinaryEncoding{Width = 1};
+    bool Loej with BinaryEncoding{Width = 1};
+    bool Start with BinaryEncoding{Width = 1};
+}
+     
+// [SBC-3] 5.20 SYNCHRONIZE CACHE (10) command  - OPERATION CODE (35h)
+type SynchronizeCache10CommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 5};
+    bool SyncNV with BinaryEncoding{Width = 1};
+    bool Immed with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    uint LogicalBlockAddress;
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    ushort NumberOfLogicalBlocks;
+}
+
+// [SBC-3] 5.21 SYNCHRONIZE CACHE (16) command - OPERATION CODE (91h)
+type SynchronizeCache16CommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 5};
+    bool SyncNV with BinaryEncoding{Width = 1};
+    bool Immed with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    ulong LogicalBlockAddress;
+    uint NumberOfLogicalBlocks;
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+}
+     
+//[SBC-3] 5.22 VERIFY (10) command - OPERATION CODE (2Fh)
+type Verify10CommandParameters
+{
+    byte Vrprotect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    byte Reserved1 with BinaryEncoding{Width = 2};
+    bool Bytchk with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    uint LogicalBlockAddress;
+    uint NumberOfLogicalBlocks;
+    
+    bool RestrictedForMMC6 with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 2};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    
+    ushort VerificationLength;
+}
+     
+// [SBC-3] 5.23 VERIFY (12) command - OPERATION CODE (AFh)
+type Verify12CommandParameters
+{
+    byte Vrprotect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    byte Reserved1 with BinaryEncoding{Width = 2};
+    bool Bytchk with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    uint LogicalBlockAddress;
+    uint VerificationLength;
+    
+    bool RestrictedForMMC6 with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 2};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+}
+ 
+// [SBC-3] 5.24 VERIFY (16) command - OPERATION CODE (8Fh)
+type Verify16CommandParameters
+{
+    byte Vrprotect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    byte Reserved1 with BinaryEncoding{Width = 2};
+    bool Bytchk with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 1};
+    
+    ulong LogicalBlockAddress;
+    uint VerificationLength;
+    
+    bool RestrictedForMMC6 with BinaryEncoding{Width = 1};
+    byte Reserved3 with BinaryEncoding{Width = 2};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+}
+
+// [SBC-3] 5.25 VERIFY (32) command - OPERATION CODE (7Fh)
+type Verify32CommandParameters
+{
+    array<byte> Reserved1 with BinaryEncoding{Length = 4};
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    
+    (byte where value == 0x18) AdditionalCDBLength;
+    (ushort where value == 0x000A) ServiceAction;
+    
+    byte Vrprotect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    byte Reserved3 with BinaryEncoding{Width = 2};
+    bool Bytchk with BinaryEncoding{Width = 1};
+    ushort Reserved4 with BinaryEncoding{Width = 9};
+    
+    ulong LogicalBlockAddress;
+    uint ExpectedInitialLogicalBlockReferenceTag;
+    ushort ExpectedLogicalBlockApplicationTag;
+    ushort LogicalBlockApplicationTagMask;
+    uint VerificationLength;
+}
+
+// [SBC-3] 5.26 WRITE (6) command - OPERATION CODE (0Ah)
+type Write6CommandParameters
+{
+    uint Byte with BinaryEncoding{Width = 4};
+    uint LogicalBlockAddress with BinaryEncoding{Width = 20};
+    byte TransferLength;
+}
+
+// [SBC-3] 5.27 WRITE (10) command - OPERATION CODE (2Ah)
+type Write10CommandParameters
+{
+    byte Wrprotect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    byte Reserved with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    uint LogicalBlockAddress;
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    
+    ushort TransferLength;
+}
+
+// [SBC-3] 5.28 WRITE (12) command - OPERATION CODE (AAh)
+type Write12CommandParameters
+{
+    byte Wrprotect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    uint LogicalBlockAddress;
+    uint TransferLength;
+    
+    bool RestrictedForMMC6 with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 2};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+}
+     
+// [SBC-3] 5.29 WRITE (16) command - OPERATION CODE (8Ah)
+type Write16CommandParameters
+{
+    byte Wrprotect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    ulong LogicalBlockAddress;
+    uint TransferLength;
+    
+    bool RestrictedForMMC6 with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 2};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+}
+
+// [SBC-3] 5.30 WRITE (32) command - OPERATION CODE (7Fh)
+type Write32CommandParameters
+{
+    array<byte> Reserved1 with BinaryEncoding{Length = 4};
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    
+    (byte where value == 0x18) AdditionalCDBLength;
+    (ushort where value == 0x000B) ServiceAction;
+    
+    byte Wrprotect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    byte Reserved3;
+    ulong LogicalBlockAddress;
+    uint ExpectedInitialLogicalBlockReferenceTag;
+    ushort ExpectedLogicalBlockApplicationTag;
+    ushort LogicalBlockApplicationTagMask;
+    uint VerificationLength;
+}
+
+// [SBC-3] 5.31 WRITE AND VERIFY (10) command - OPERATION CODE (2Eh)
+type WriteAndVerify10CommandParameters
+{
+    byte Wrprotect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    uint LogicalBlockAddress;
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    
+    ushort TransferLength;
+}
+ 
+// [SBC-3] 5.32 WRITE AND VERIFY (12) command - OPERATION CODE (AEh)
+type WriteAndVerify12CommandParameters
+{
+    byte Wrprotect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    uint LogicalBlockAddress;
+    uint TransferLength;
+    
+    bool RestrictedForMMC6 with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 2};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+}
+
+// [SBC-3] 5.33 WRITE AND VERIFY (16) command - OPERATION CODE (8Eh)
+type WriteAndVerify16CommandParameters
+{
+    byte Wrprotect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    ulong LogicalBlockAddress;
+    uint TransferLength;
+    
+    bool RestrictedForMMC6 with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 2};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+}
+     
+// [SBC-3] 5.34 WRITE AND VERIFY (32) command - OPERATION CODE (7Fh)
+type WriteAndVerify32CommandParameters
+{
+    array<byte> Reserved1 with BinaryEncoding{Length = 4};
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    
+    (byte where value == 0x18) AdditionalCDBLength;
+    (ushort where value == 0x000C) ServiceAction;
+    
+    byte Wrprotect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    byte Reserved3 with BinaryEncoding{Width = 2};
+    bool Bytchk with BinaryEncoding{Width = 1};
+    ushort Reserved4 with BinaryEncoding{Width = 9};
+    
+    ulong LogicalBlockAddress;
+    uint ExpectedInitialLogicalBlockReferenceTag;
+    ushort ExpectedLogicalBlockApplicationTag;
+    ushort LogicalBlockApplicationTagMask;
+    uint VerificationLength;
+}
+
+// [SBC-3] 5.35 WRITE LONG (10) command - OPERATION CODE (3Fh)
+type WriteLong10CommandParameters
+{
+    bool CorDis with BinaryEncoding{Width = 1};
+    bool WrUncor with BinaryEncoding{Width = 1};
+    bool PBLock with BinaryEncoding{Width = 1};
+    byte Reserved1 with BinaryEncoding{Width = 4};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    uint LogicalBlockAddress;
+    byte Reserved2;
+    ushort ByteTransferLength;
+}
+ 
+// [SBC-3] 5.36 WRITE LONG (16) command - OPERATION CODE (9Fh)
+type WriteLong16CommandParameters
+{
+    bool CorDis with BinaryEncoding{Width = 1};
+    bool WrUncor with BinaryEncoding{Width = 1};
+    bool PBLock with BinaryEncoding{Width = 1};
+    byte Reserved1 with BinaryEncoding{Width = 4};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    ulong LogicalBlockAddress;
+    array<byte> Reserved2 with BinaryEncoding{Length = 2};
+    ushort ByteTransferLength;
+    byte Reserved3;
+}
+
+// [SBC-3] 5.37 WRITE Same (10) command - OPERATION CODE (41h)
+type WriteSame10CommandParameters
+{
+    byte Wrprotect with BinaryEncoding{Width = 3};
+    byte Reserved1 with BinaryEncoding{Width = 2};
+    bool Pbdata with BinaryEncoding{Width = 1};
+    bool Lbdata with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    uint LogicalBlockAddress;
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    
+    ushort NumberOfLogicalBlocks;
+}
+
+// [SBC-3] 5.38 WRITE SAME (16) command - OPERATION CODE (93h)
+type WriteSave16CommandParameters
+{
+    byte Wrprotect with BinaryEncoding{Width = 3};
+    byte Reserved1 with BinaryEncoding{Width = 2};
+    bool Pbdata with BinaryEncoding{Width = 1};
+    bool Lbdata with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    ulong LogicalBlockAddress;
+    uint NumberOfLogicalBlocks;
+
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+}     
+ 
+// [SBC-3] 5.39 WRITE SAME (32) command - OPERATION CODE (7Fh)
+type WriteSame32CommandParameters
+{
+    array<byte> Reserved1 with BinaryEncoding{Length = 4};
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    
+    (byte where value == 0x18) AdditionalCDBLength;
+    (ushort where value == 0x000D) ServiceAction;
+    
+    byte Wrprotect with BinaryEncoding{Width = 3};
+    byte Reserved3 with BinaryEncoding{Width = 2};
+    bool Pbdata with BinaryEncoding{Width = 1};
+    bool Lbdata with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    byte Reserved4;
+    ulong LogicalBlockAddress;
+    uint ExpectedInitialLogicalBlockReferenceTag;
+    ushort ExpectedLogicalBlockApplicationTag;
+    ushort LogicalBlockApplicationTagMask;
+    uint NumberOfLogicalBlocks;
+}
+
+// [SBC-3] 5.40 XDREAD (10) command - OPERATION CODE (52h)
+type XDRead10CommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 7};
+    bool Xorpinfo with BinaryEncoding{Width = 1};
+    
+    uint LogicalBlockAddress;
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    
+    ushort TransferLength;
+}
+ 
+// [SBC-3] 5.41 XDREAD (32) command - OPERATION CODE (7Fh)
+type XDRead32CommandParameters
+{
+    array<byte> Reserved1 with BinaryEncoding{Length = 4};
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    
+    (byte where value == 0x18) AdditionalCDBLength;
+    (ushort where value == 0x0003) ServiceAction;
+    
+    byte Reserved3 with BinaryEncoding{Width = 7};
+    bool Xorpinfo with BinaryEncoding{Width = 1};
+    
+    byte Reserved4;
+    ulong LogicalBlockAddress;
+    array<byte> Reserved5 with BinaryEncoding{Length = 8};
+    uint TransferLength;
+}
+
+// [SBC-3] 5.42 XDWRITE (10) command - OPERATION CODE (50h)
+type XDWrite10CommandParameters
+{
+    byte Wrprotect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    byte DisableWrite with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    uint LogicalBlockAddress;
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    
+    ushort TransferLength;
+}
+   
+// [SBC-3] 5.43 XDWRITE (32) command - OPERATION CODE (7Fh)
+type XDWrite32CommandParameters
+{
+    array<byte> Reserved1 with BinaryEncoding{Length = 4};
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    
+    (byte where value == 0x18) AdditionalCDBLength;
+    (ushort where value == 0x0004) ServiceAction;
+    
+    byte Wrprotect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    byte DisableWrite with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    byte Reserved3;
+    ulong LogicalBlockAddress;
+    array<byte> Reserved4 with BinaryEncoding{Length = 8};
+    uint TransferLength;
+}
+
+// [SBC-3] 5.44 XDWRITEREAD (10) command - OPERATION CODE (53h)
+type XDWriteRead10CommandParameters
+{
+    byte Wrprotect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    byte DisableWrite with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    bool Xorpinfo with BinaryEncoding{Width = 1};
+    
+    uint LogicalBlockAddress;
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    
+    ushort TransferLength;
+}
+     
+// [SBC-3] 5.45 XDWRITEREAD (32) command- OPERATION CODE (7Fh)
+type XDWriteRead32CommandParameters
+{
+    array<byte> Reserved1 with BinaryEncoding{Length = 4};
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    
+    (byte where value == 0x18) AdditionalCDBLength;
+    (ushort where value == 0x0007) ServiceAction;
+    
+    byte Wrprotect with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    byte DisableWrite with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    bool Xorpinfo with BinaryEncoding{Width = 1};
+    
+    byte Reserved3;
+    ulong LogicalBlockAddress;
+    array<byte> Reserved4 with BinaryEncoding{Length = 8};
+    uint TransferLength;
+}
+ 
+// [SBC-3] 5.46 XPWRITE (10) command - OPERATION CODE (51h)
+type XPWrite10CommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    byte DisableWrite with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    bool Xorpinfo with BinaryEncoding{Width = 1};
+    
+    uint LogicalBlockAddress;
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    
+    ushort TransferLength;
+}
+ 
+// [SBC-3] 5.45 XDWRITEREAD (32) command - OPERATION CODE (7Fh)
+type XPWrite32CommandParameters
+{
+    array<byte> Reserved1 with BinaryEncoding{Length = 4};
+    
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    byte GroupNumber with BinaryEncoding{Width = 5};
+    
+    (byte where value == 0x18) AdditionalCDBLength;
+    (ushort where value == 0x0006) ServiceAction;
+    
+    byte Reserved3 with BinaryEncoding{Width = 3};
+    bool Dpo with BinaryEncoding{Width = 1};
+    bool Fua with BinaryEncoding{Width = 1};
+    byte DisableWrite with BinaryEncoding{Width = 1};
+    bool FuaNv with BinaryEncoding{Width = 1};
+    bool Xorpinfo with BinaryEncoding{Width = 1};
+    
+    byte Reserved4;
+    ulong LogicalBlockAddress;
+    array<byte> Reserved5 with BinaryEncoding{Length = 8};
+    uint TransferLength;
+}
+
+// Future Reference: Add more type for the commands specified in [SPC-4]
+
+// [SPC-4] 3.1 CHANGE DEFINITION command - OPERATION CODE (40h)
+type ChangeDefinitionCommandParameters
+{
+    array<byte> Reserved1 with BinaryEncoding{Length = 3};
+    
+    byte Reserved2 with BinaryEncoding{Width = 7};
+    bool Save with BinaryEncoding{Width = 1};
+    
+    byte Reserved3 with BinaryEncoding{Width = 1};
+    byte DefinitionParam with BinaryEncoding{Width = 7};
+    
+    array<byte> Reserved4 with BinaryEncoding{Length = 4};
+    byte ParameterListLength;
+}
+
+// [SPC-4] 3.11 MODE SELECT(6) command - OPERATION CODE (15h)
+type ModeSelect6CommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    bool PF with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    bool SP with BinaryEncoding{Width = 1};
+    
+    array<byte> Reserved3 with BinaryEncoding{Length = 2};
+    byte ParametersListLength;
+}
+
+// [SPC-4] 3.12 MODE SELECT(10) command - OPERATION CODE (55h)
+type ModeSelect10CommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    bool PF with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    bool SP with BinaryEncoding{Width = 1};
+    
+    array<byte> Reserved3 with BinaryEncoding{Length = 5};
+    ushort ParametersListLength;
+}
+
+// [SPC-4] 3.13 MODE SENSE(6) command - OPERATION CODE (1Ah)
+type ModeSense6CommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    bool PF with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    bool SP with BinaryEncoding{Width = 1};
+    
+    byte PC with BinaryEncoding{Width = 2};
+    byte PageCode with BinaryEncoding{Width = 6};
+    
+    byte SubpageCode;
+    byte AllocationLength;
+}
+
+// [SPC-4] 3.14 MODE SENSE(10) command - OPERATION CODE (5Ah)
+type ModeSense10CommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 2};
+    bool Llbaa with BinaryEncoding{Width = 1};
+    bool PF with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 3};
+    bool SP with BinaryEncoding{Width = 1};
+    
+    byte PC with BinaryEncoding{Width = 2};
+    byte PageCode with BinaryEncoding{Width = 6};
+    
+    byte SubpageCode;
+    array<byte> Reserved3 with BinaryEncoding{Length = 3};
+    ushort AllocationLength;
+}
+
+// [SPC-4] 3.15 PERSISTENT RESERVE IN command - OPERATION CODE (5Eh)
+type PersistentReserveInCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    byte ServiceAction with BinaryEncoding{Width = 5};
+    
+    array<byte> Reserved2 with BinaryEncoding{Length = 5};
+    ushort AllocationLength;
+}
+
+// [SPC-4] 3.16 PERSISTENT RESERVE OUT command - OPERATION CODE (5Fh)
+type PersistentReserveOutCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    byte ServiceAction with BinaryEncoding{Width = 5};
+    
+    byte Scope with BinaryEncoding{Width = 4};
+    byte Type with BinaryEncoding{Width = 4};
+    
+    array<byte> Reserved2 with BinaryEncoding{Length = 4};
+    ushort ParametersListLength;
+}
+
+// [SPC-4] 3.24 READ BUFFER command - OPERATION CODE (3Ch)
+type ReadBufferCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    byte Mode with BinaryEncoding{Width = 5};
+    
+    byte BufferID;
+    uint BufferOffset with BinaryEncoding{Width = 24};
+    uint AllocationLength with BinaryEncoding{Width = 24};
+}
+
+// [SPC-4] 3.33 RELEASE (6) command - OPERATION CODE (17h)
+type Release6CommandParameters
+{
+    ushort Reserved1 with BinaryEncoding{Width = 3};
+    ushort Obsolete with BinaryEncoding{Width = 13};
+
+    array<byte> Reserved2 with BinaryEncoding{Length = 2};
+}
+
+// [SPC-4] 3.34 RELEASE (10) command - OPERATION CODE (57h)
+type Release10CommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    bool ThirdParty with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 2};
+    byte LongID with BinaryEncoding{Width = 1};
+    byte Obsolete with BinaryEncoding{Width = 1};
+    
+    byte ThirdPtyDeviceID;
+    array<byte> Reserved3 with BinaryEncoding{Length = 3};
+    ushort ParameterListLength;
+}
+
+// [SPC-4] 6.4 INQUIRY command - OPERATION CODE (12h)
+type InquiryCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 4};
+    byte Dbd with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 3};
+
+    byte PageCode;
+    ushort AllocationLength;
+}
+
+// [SPC-4] 6.5 LOG SELECT command - OPERATION CODE (4Ch)
+type LogSelectCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 6};
+    bool Pcr with BinaryEncoding{Width = 1};
+    bool SP with BinaryEncoding{Width = 1};
+    
+    byte PC with BinaryEncoding{Width = 2};
+    byte PageCode with BinaryEncoding{Width = 6};
+    
+    byte SubpageCode;
+    array<byte> Reserved3 with BinaryEncoding{Length = 3};
+    ushort ParametersListLength;
+}
+ 
+// [SPC-4] 6.6 LOG SENSE command - OPERATION CODE (4Dh)
+type LogSenseCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 6};
+    bool Pcr with BinaryEncoding{Width = 1};
+    bool SP with BinaryEncoding{Width = 1};
+    
+    byte PC with BinaryEncoding{Width = 2};
+    byte PageCode with BinaryEncoding{Width = 6};
+    
+    byte Reserved2;
+    ushort ParameterPointer;
+    ushort AllocationLength;
+}
+
+// [SPC-4] 6.20 RECEIVE DIAGNOSTIC RESULTS command - OPERATION CODE (1Ch)
+type ReceiveDiagnosticResultsCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 7};
+    bool Pcv with BinaryEncoding{Width = 1};
+    
+    byte PageCode;
+    uint AllocationLength with BinaryEncoding{Width = 24};
+}
+
+// OPERATION CODE (A3h)
+pattern ReportCommandParameters = ReportAliasesCommandParameters
+                                    | ReportIdentifyingInformationCommandParameters
+                                    | ReportPriorityCommandParameters
+                                    | ReportSupportedOperationCodesCommandParameters
+                                    | ReportSupportedTaskManagementFunctionsCommandParameters
+                                    | ReportTargetPortGroupsCommandParameters
+                                    | ReportTimeStampCommandParameters;
+
+// [SPC-4] 6.21 REPORT ALIASES command - OPERATION CODE (A3h)
+type ReportAliasesCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    (byte where value == 0x0B) ServiceAction with BinaryEncoding{Width = 5};
+    
+    array<byte> Reserved2 with BinaryEncoding{Length = 4};
+    uint AllocationLength;
+    byte Reserved3;
+}
+
+// [SPC-4] 6.22 REPORT IDENTIFYING INFORMATION command - OPERATION CODE (A3h)
+type ReportIdentifyingInformationCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    (byte where value == 0x05) ServiceAction with BinaryEncoding{Width = 5};
+    
+    array<byte> Reserved2 with BinaryEncoding{Length = 2};
+    ushort Restricted;
+    uint AllocationLength;
+    
+    byte InformationType with BinaryEncoding{Width = 7};
+    byte Reserved3 with BinaryEncoding{Width = 1};
+}
+
+// [SPC-4] 6.23 REPORT LUNS command - OPERATION CODE (A0h)
+type ReportLunsCommandParameters
+{
+    byte Reserved1;
+    byte SelectReport;
+    array<byte> Reserved2 with BinaryEncoding{Length = 3};
+    uint AllocationLength;
+    byte Reserved3;
+}
+
+// [SPC-4] 6.24 REPORT PRIORITY command - OPERATION CODE (A3h)
+type ReportPriorityCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    (byte where value == 0x0E) ServiceAction with BinaryEncoding{Width = 5};
+    
+    byte PriorityReported with BinaryEncoding{Width = 2};
+    byte Reserved2 with BinaryEncoding{Width = 6};
+    
+    array<byte> Reserved3 with BinaryEncoding{Length = 3};
+    uint AllocationLength;
+    byte Reserved4;
+}
+
+// [SPC-4] 6.25 REPORT SUPPORTED OPERATION CODES command - OPERATION CODE (A3h)
+type ReportSupportedOperationCodesCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    (byte where value == 0x0E) ServiceAction with BinaryEncoding{Width = 5};
+    
+    bool Pctd with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 4};
+    byte ReportingOptions with BinaryEncoding{Width = 6};
+    
+    byte RequestedOperationCode;
+    ushort RequestedServiceAction;
+    
+    array<byte> Reserved3 with BinaryEncoding{Length = 3};
+    uint AllocationLength;
+    byte Reserved4;
+}
+
+// [SPC-4] 6.26 REPORT SUPPORTED TASK MANAGEMENT FUNCTIONS command - OPERATION CODE (A3h)
+type ReportSupportedTaskManagementFunctionsCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    (byte where value == 0x0D) ServiceAction with BinaryEncoding{Width = 5};
+    
+    array<byte> Reserved2 with BinaryEncoding{Length = 4};
+    uint AllocationLength where ValidationCheck(value >= 4, null, "The AllocationLength field value should be 4 or greater.");
+    byte Reserved3;
+}
+
+// [SPC-4] 6.27 REPORT TARGET PORT GROUPS command - OPERATION CODE (A3h)
+type ReportTargetPortGroupsCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    (byte where value == 0x0A) ServiceAction with BinaryEncoding{Width = 5};
+    
+    array<byte> Reserved2 with BinaryEncoding{Length = 4};
+    uint AllocationLength;
+    byte Reserved3;
+}
+
+// [SPC-4] 6.28 REPORT TIMESTAMP command - OPERATION CODE (A3h)
+type ReportTimeStampCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    (byte where value == 0x0F) ServiceAction with BinaryEncoding{Width = 5};
+    
+    array<byte> Reserved2 with BinaryEncoding{Length = 4};
+    uint AllocationLength;
+    byte Reserved3;
+}
+
+// [SPC-4] 6.29 REQUEST SENSE command - OPERATION CODE (03h)
+type ReportSenseCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 7};
+    bool Desc with BinaryEncoding{Width = 1};
+    
+    array<byte> Reserved2 with BinaryEncoding{Length = 2};
+    byte AllocationLength;
+}
+
+// [SPC-4] 6.32 SEND DIAGNOSTIC command - OPERATION CODE (1Dh)
+type SendDiagnosticCommandParameters
+{
+    byte SelfTestCode with BinaryEncoding{Width = 3};
+    bool PF with BinaryEncoding{Width = 1};
+    byte Reserved1 with BinaryEncoding{Width = 1};
+    bool SelfTest with BinaryEncoding{Width = 1};
+    bool DevOfL with BinaryEncoding{Width = 1};
+    bool UnitOfL with BinaryEncoding{Width = 1};
+    
+    byte Reserved2;
+    ushort ParametersListLength;
+}
+
+// [SPC-4] 6.37 TEST UNIT READY command - OPERATION CODE (00h)
+type TestUnitReadyCommandParameters
+{
+    array<byte> Reserved with BinaryEncoding{Length = 4};
+}
+
+// [SPC-4] 6.39 WRITE BUFFER command - OPERATION CODE (3Bh)
+type WriteBufferCommandParameters
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    byte Mode with BinaryEncoding{Width = 5};
+    
+    byte BufferID;
+    uint BufferOffset with BinaryEncoding{Width = 24};
+    uint AllocationLength with BinaryEncoding{Width = 24};
+}
+
+// [RFC 3720] 5.1.  Text Format
+syntax KeyValueFormat = pairs: (SimpleKeyValuePair)+
+                        => MergeKeyValuePairs(pairs)
+                        with StreamEncoding{Encoding = TextEncoding.ASCII};
+/* Future Reference: Using UTF8 if this TextEncoding is supported
+ * Bug#23734 - [ValueSystem] Stream Encoding does not support UTF8 as Text Encoding
+ */
+
+// Simple "key=value" syntax
+syntax SimpleKeyValuePair = k: KeyName "=" v: KeyValue NullDelimiter
+                            => new KeyValuePair
+                            {
+                                Key = k,
+                                Value = (v == null ? "" : v)
+                            };
+
+syntax KeyName = s: StandardLabel => s;
+
+// A string of one or more characters that consist of letters, digits, dot, minus, plus, commercial at, or underscore.
+syntax StandardLabel = s:regex {[A-Z][a-z0-9A-Z_@+\x2E\x2D]*} => s;
+
+syntax NullDelimiter = regex {[\x00]};
+
+syntax KeyValue = s:regex {[^\x00]*} => s;
+
+// Future Reference: Define more detailed syntax according to different Value type.
+
+//--------------------------------------------------------------------
+// Types that not from the protocol refrence
+type KeyValuePair
+{
+    string Key;
+    string Value;
+}
+
+// Types that defines to keep the values that available in the session
+type LoginPhaseParameters
+{
+    bool HasHeaderDigest;
+    bool HasDataDigest;
+}
+
+// WORKAROUND: For Bug#31792 - [DCR]BinaryDecoder<T>(binary) should support big-endian or little-endian dynamically assigned in runtime decoding.
+type Uint24Type
+{
+    uint Value with BinaryEncoding{Width = 24};
+}
+
+pattern Uint32Type = uint;
+
+//-------------------------------------------
+// Helper functions
+
+// Convert the array of KeyValuePair to map<string, string>
+map<string, string> MergeKeyValuePairs(array<KeyValuePair> keyValuePairs)
+{
+    map<string, string> result = {};
+    foreach (var pair in keyValuePairs)
+    {
+        result[pair.Key] = pair.Value;
+    }
+    return result;
+}
+
+// Get the value of the HeaderDigest field
+optional uint GetDigest(stream s, bool hasDigest)
+{
+    if (hasDigest)
+    {
+        return BinaryDecoder<Uint32Type>(s);
+    }
+    return nothing;
+}
+
+// Get the value of the DataDigest field
+optional uint GetDigest(stream s, uint dataSegmentLength, bool hasDigest)
+{
+    // A zero-length Data Segment also implies a zero-length data-digest.
+    if (hasDigest && dataSegmentLength != 0)
+    {
+        return BinaryDecoder<Uint32Type>(s);
+    }
+    return nothing;
+}
+
+// Get the value of the DataSegment field
+optional binary GetDataSegment(stream s, uint dataSegmentLength)
+{
+    if (dataSegmentLength > 0)
+    {
+        var ds = BinaryDecoder<Blob[dataSegmentLength]>(s) as Blob;
+        return ds.Data;
+    }
+    return nothing;
+}
+
+// Get the padding for the DataSegment field
+optional array<byte> GetDataSegmentPadding(stream s, uint padLength)
+{
+    if (padLength == 0)
+    {
+        return nothing;
+    }
+    Blob pad = BinaryDecoder<Blob[padLength as uint]>(s) as Blob;
+    return pad.Data as array<byte>;
+}
+
+// Get the format of key-value pairs for the DataSegment field
+map<string, string> GetKeyValuePairsAndSetLoginPhaseParams(stream s, uint dataSegmentLength, ref LoginPhaseParameters lpp)
+{
+    if (dataSegmentLength == 0)
+    {
+        return {};
+    }
+    
+    var ds = BinaryDecoder<Blob[dataSegmentLength]>(s) as Blob;
+    var kvp = KeyValueFormat(ds.Data);
+    if (kvp != nothing)
+    {
+        var pairs = kvp as map<string, string>;
+        // Get the parameters that will availble in current session
+        if (pairs.Keys["HeaderDigest"])
+        {
+            if (lpp == null)
+            {
+                lpp = new LoginPhaseParameters{};
+            }
+            lpp.HasHeaderDigest = pairs["HeaderDigest"] == "CRC32C";
+        }
+        
+        if (pairs.Keys["DataDigest"])
+        {
+            if (lpp == null) // This should not happen. Add this check in case that the data is invalid
+            {
+                lpp = new LoginPhaseParameters{};
+            }
+            lpp.HasDataDigest = pairs["DataDigest"] == "CRC32C";
+        }
+        
+        return pairs;
+    }
+    else
+    {
+        throw "Key-value pairs cannot be decoded successfully.";
+    }
+}
+
+// For summary
+string StageCodesToText(byte code)
+{
+    return (StageCodesMap.Keys[code]? StageCodesMap[code] : (code as string) + "(Reserved)");
+}
+
+type DecodingCache : DecodingCacheBase
+{
+    void(FeatureMessage) Dispatcher;
+    
+    void DecodeAndDispatchMessages(VirtualTransport.VirtualDataSegment seg, ref binary loginBuffer, ref binary textBuffer, ref LoginPhaseParameters lpp)
+    {
+        // Initialize the buffer
+        if (Buffer == null)
+        {
+            // Look ahead the first byte to indentify whether it's continuous message data or not.
+            if (IsValidOpcode(seg.Payload[0]))
+            {
+                Buffer = $[];
+            }
+            else
+            {
+                ValidationCheck(false, null, "iSCSI: Missing the previous messages for this continued PDU data.");
+                dispatch endpoint IntermediateNode accepts seg;
+                return;
+            }
+        }
+        
+        bool hasHeaderDigest;
+        bool hasDataDigest;
+        if (lpp != null) // The login messages are not lost in the session
+        {
+            hasHeaderDigest = lpp.HasHeaderDigest;
+            hasDataDigest = lpp.HasDataDigest;
+        }
+
+        // Accumulate the payload from TCP in the buffer
+        //Buffer += seg.Payload;
+        stream str = Buffer;
+        // A single TCP segment may carries multiple iscsi messages  
+        while (str.RemainingLength >= 48) // 48 is the totoal length of the Basic Header Segment
+        {
+            // Prefech the first Opcode byte to indentify the message type
+            byte opcode = (str.CurrentByte & 0x3F) as byte;
+            if (!(opcode is Opcodes))
+            {
+                Clear();
+                ValidationCheck(false, null, DiagnosisLevel.Warning, "iSCSI: Invalid opcode: " + opcode.ToString() + ".");
+                return;
+            }
+            // Prefech the DataSegmentLength and TotalAHSLength field to indentify whether the data is compelte or not
+            var totalAHSLength = Buffer[str.BytePosition + 4] * 4;
+            var uint24 = BinaryDecoder<Uint24Type>(Buffer.Segment(str.BytePosition + 5, 3)) as Uint24Type;
+            var dataSegmentLength = uint24.Value;
+            var paddingLength = (dataSegmentLength % 4 == 0)? 0 : (4 - dataSegmentLength % 4);
+            var totalPDULength = 48 + totalAHSLength + dataSegmentLength + (hasHeaderDigest? 4 : 0) + ((hasDataDigest && dataSegmentLength != 0)? 4 : 0) + paddingLength;
+
+            // If the data is insufficent, exist this funtion
+            if (totalPDULength > str.RemainingLength)
+            {
+                break;
+            }
+            
+            //stream str = Buffer;
+            switch (opcode)
+            {
+                // Initiator opcodes, the message that accepted by the server side
+                case Opcodes.NopOut =>
+                    switch (str)
+                    {
+                        case m: Messages.NopOut from BinaryDecoder<Messages.NopOut> =>
+                            // Update the optional fields
+                            m.HeaderDigest = GetDigest(str, hasHeaderDigest);
+                            m.PingData = GetDataSegment(str, dataSegmentLength);
+                            m.Padding = GetDataSegmentPadding(str, paddingLength);
+                            m.DataDigest = GetDigest(str, dataSegmentLength, hasDataDigest);
+                            dispatch endpoint Server accepts m;
+                            
+                        default =>
+                            ThrowDecodingException("iSCSI", "NopOut");
+                    }
+                case Opcodes.ScsiCommand =>
+                    var part = BinaryDecoder<Blob[totalAHSLength + 48 as uint]>(str) as Blob;
+                    switch (part.Data)
+                    {
+                        case m: Messages.ScsiCommand from BinaryDecoder<Messages.ScsiCommand> =>
+                            /* Decode the CommandDescriptorBlock for operation code 7Fh,
+                             * since the data size will extend 16 bytes and need manully merge it
+                             */
+                            if (m.ScsiCommandDescriptorBlock is binary && (m.AHS as array<AdditionalHeaderSegment>).Count > 0)
+                            {
+                                // Get the compelete CDB data from ScsiCommandDescriptorBlock and AHS
+                                binary binaryCDB = m.ScsiCommandDescriptorBlock as binary;
+                                foreach (var ahs in m.AHS as array<AdditionalHeaderSegment>)
+                                {
+                                    if (ahs is ExtendedCDBAHS)
+                                    {
+                                        binaryCDB += (ahs as ExtendedCDBAHS).ExtendedCDB;
+                                    }
+                                }
+                                m.VariableLengthCommandDescriptorBlock = BinaryDecoder<VariableLengthCommandDescriptorBlock>(binaryCDB);
+                            }
+                            else
+                            {
+                                m.VariableLengthCommandDescriptorBlock = nothing;
+                            }
+                            
+                            m.HeaderDigest = GetDigest(str, hasHeaderDigest);
+                            m.CommandData = GetDataSegment(str, dataSegmentLength);
+                            m.Padding = GetDataSegmentPadding(str, paddingLength);
+                            m.DataDigest = GetDigest(str, dataSegmentLength, hasDataDigest);
+                            dispatch endpoint Server accepts m;
+
+                        default =>
+                            ThrowDecodingException("iSCSI", "ScsiCommand");
+                    }
+                case Opcodes.ScsiTaskManagementFunctionRequest =>
+                    switch (str)
+                    {
+                        case m: Messages.ScsiTaskManagementFunctionRequest from BinaryDecoder<Messages.ScsiTaskManagementFunctionRequest> =>
+                            m.HeaderDigest = GetDigest(str, hasHeaderDigest);
+                            dispatch endpoint Server accepts m;
+
+                        default =>
+                            ThrowDecodingException("iSCSI", "ScsiTaskManagementFunctionRequest");
+                    }
+                case Opcodes.LoginRequest =>
+                    switch (str)
+                    {
+                        case m: Messages.LoginRequest from BinaryDecoder<Messages.LoginRequest> =>
+                            if (!m.C && loginBuffer == $[]) // The Text (data segment) is complete
+                            {
+                                m.LoginParameters = GetKeyValuePairsAndSetLoginPhaseParams(str, dataSegmentLength, ref lpp);
+                                m.Padding = GetDataSegmentPadding(str, paddingLength);
+                                dispatch endpoint Server accepts m;
+                            }
+                            // The text need to be continued
+                            else
+                            {
+                                optional binary data = GetDataSegment(str, dataSegmentLength);
+                                if (data != nothing)
+                                {
+                                    loginBuffer += data as binary;
+                                }
+                                m.LoginParameters = data;
+                                m.Padding = GetDataSegmentPadding(str, paddingLength);
+                                dispatch endpoint IntermediateNode accepts m;
+                                
+                                // Create the reassembled message
+                                if (!m.C)
+                                {
+                                    Messages.LoginRequest rm = new Messages.LoginRequest {
+                                                                I = m.I,
+                                                                Opcode = m.Opcode,
+                                                                T = m.T,
+                                                                Csg = m.Csg,
+                                                                Nsg = m.Nsg,
+                                                                VersionMax = m.VersionMax,
+                                                                VersionMin = m.VersionMin,
+                                                                DataSegmentLength = loginBuffer.Count as uint,
+                                                                Isid = m.Isid,
+                                                                Tsih = m.Tsih,
+                                                                InitiatorTaskTag = m.InitiatorTaskTag,
+                                                                Cid = m.Cid,
+                                                                CmdSN = m.CmdSN,
+                                                                ExpStatSN = m.ExpStatSN,
+                                                                Reserved4 = m.Reserved4
+                                                            };
+                                    rm.LoginParameters = GetKeyValuePairsAndSetLoginPhaseParams(loginBuffer, loginBuffer.Count as uint , ref lpp);
+                                    rm#IsReassembled = true;
+                                    rm.SourceData = loginBuffer;
+                                    dispatch endpoint IntermediateNode accepts rm;
+                                    
+                                    // Clear the Buffer
+                                    loginBuffer = $[];
+                                }
+                            }
+                        default =>
+                            ThrowDecodingException("iSCSI", "LoginRequest");
+                    }
+                case Opcodes.TextRequest =>
+                    switch (str)
+                    {
+                        case m: Messages.TextRequest from BinaryDecoder<Messages.TextRequest> =>
+                            if (!m.C && textBuffer == $[]) // The Text (data segment) is complete
+                            {
+                                m.Text = GetKeyValuePairsAndSetLoginPhaseParams(str, dataSegmentLength, ref lpp);
+                                m.Padding = GetDataSegmentPadding(str, paddingLength);
+                                m.DataDigest = GetDigest(str, dataSegmentLength, hasDataDigest);
+                                dispatch endpoint Server accepts m;
+                            }
+                            // The text need to be continued
+                            else
+                            {
+                                optional binary data = GetDataSegment(str, dataSegmentLength);
+                                if (data != nothing)
+                                {
+                                    textBuffer += data as binary;
+                                }
+                                m.Text = data;
+                                m.Padding = GetDataSegmentPadding(str, paddingLength);
+                                m.DataDigest = GetDigest(str, dataSegmentLength, hasDataDigest);
+                                dispatch endpoint IntermediateNode accepts m;
+                                
+                                // Create the reassembled message
+                                if (!m.C)
+                                {
+                                    Messages.TextRequest rm = new Messages.TextRequest {
+                                                                I = m.I,
+                                                                Opcode = m.Opcode,
+                                                                F = m.F,
+                                                                DataSegmentLength = textBuffer.Count as uint,
+                                                                LogicalUnitNumber = m.LogicalUnitNumber,
+                                                                InitiatorTaskTag = m.InitiatorTaskTag,
+                                                                TargetTransferTag = m.TargetTransferTag,
+                                                                CmdSN = m.CmdSN,
+                                                                ExpStatSN = m.ExpStatSN,
+                                                                Reserved4 = m.Reserved4
+                                                            };
+                                    rm.Text = GetKeyValuePairsAndSetLoginPhaseParams(textBuffer, textBuffer.Count as uint, ref lpp);
+                                    rm#IsReassembled = true;
+                                    rm.SourceData = textBuffer;
+                                    dispatch endpoint IntermediateNode accepts rm;
+                                }
+                            }
+                        default =>
+                            ThrowDecodingException("iSCSI", "TextRequest");
+                    }
+                case Opcodes.ScsiDataOut =>
+                    switch (str)
+                    {
+                        case m: Messages.ScsiDataOut from BinaryDecoder<Messages.ScsiDataOut> =>
+                            m.HeaderDigest = GetDigest(str, hasHeaderDigest);
+                            m.DataSegment = GetDataSegment(str, dataSegmentLength) as binary;
+                            m.Padding = GetDataSegmentPadding(str, paddingLength);
+                            m.DataDigest = GetDigest(str, dataSegmentLength, hasDataDigest);
+                            dispatch endpoint Server accepts m;
+
+                        default =>
+                            ThrowDecodingException("iSCSI", "ScsiDataOut");
+                    }
+                case Opcodes.LogoutRequest =>
+                    switch (str)
+                    {
+                        case m: Messages.LogoutRequest from BinaryDecoder<Messages.LogoutRequest> =>
+                            m.HeaderDigest = GetDigest(str, hasHeaderDigest);
+                            dispatch endpoint Server accepts m;
+
+                        default =>
+                            ThrowDecodingException("iSCSI", "LogoutRequest");
+                    }        
+                case Opcodes.SnackRequest =>
+                    switch (str)
+                    {
+                        case m: Messages.SnackRequest from BinaryDecoder<Messages.SnackRequest> =>
+                            m.HeaderDigest = GetDigest(str, hasHeaderDigest);
+                            dispatch endpoint Server accepts m;
+
+                        default =>
+                            ThrowDecodingException("iSCSI", "SnackRequest");
+                    }
+                case Opcodes.VendorSpecificCodeI0 =>
+                    DecodeAndDispatchVendorSpecificMessage(str, true, hasHeaderDigest, hasDataDigest, dataSegmentLength, paddingLength);
+                case Opcodes.VendorSpecificCodeI1 =>
+                    DecodeAndDispatchVendorSpecificMessage(str, true, hasHeaderDigest, hasDataDigest, dataSegmentLength, paddingLength);
+                case Opcodes.VendorSpecificCodeI2 =>
+                    DecodeAndDispatchVendorSpecificMessage(str, true, hasHeaderDigest, hasDataDigest, dataSegmentLength, paddingLength);
+                // Target opcodes, the message that issued by the server side
+                case Opcodes.NopIn =>
+                    switch (str)
+                    {
+                        case m: Messages.NopIn from BinaryDecoder<Messages.NopIn> =>
+                            m.HeaderDigest = GetDigest(str, hasHeaderDigest);
+                            m.PingData = GetDataSegment(str, dataSegmentLength);
+                            m.Padding = GetDataSegmentPadding(str, paddingLength);
+                            m.DataDigest = GetDigest(str, dataSegmentLength, hasDataDigest);
+                            dispatch endpoint Server issues m;
+
+                        default =>
+                            ThrowDecodingException("iSCSI", "NopIn");
+                    }
+                case Opcodes.ScsiResponse =>
+                    switch (str)
+                    {
+                        case m: Messages.ScsiResponse from BinaryDecoder<Messages.ScsiResponse> =>
+                            m.HeaderDigest = GetDigest(str, hasHeaderDigest);
+                            m.DataSegment = dataSegmentLength == 0? nothing: BinaryDecoder<SenseAndResponseDataSegment[dataSegmentLength]>(str) as SenseAndResponseDataSegment;
+                            m.DataDigest = GetDigest(str, dataSegmentLength, hasDataDigest);
+                            dispatch endpoint Server issues m;
+
+                        default =>
+                            ThrowDecodingException("iSCSI", "Response");
+                    }
+                case Opcodes.ScsiTaskManagementFunctionResponse =>
+                    switch (str)
+                    {
+                        case m: Messages.ScsiTaskManagementFunctionResponse from BinaryDecoder<Messages.ScsiTaskManagementFunctionResponse> =>
+                            m.HeaderDigest = GetDigest(str, hasHeaderDigest);
+                            dispatch endpoint Server issues m;
+
+                        default =>
+                            ThrowDecodingException("iSCSI", "ScsiTaskManagementFunctionResponse");
+                    }         
+                case Opcodes.LoginResponse =>
+                    switch (str)
+                    {
+                        case m: Messages.LoginResponse from BinaryDecoder<Messages.LoginResponse> =>
+                            if (!m.C && loginBuffer == $[]) // The Text (data segment) is complete
+                            {
+                                m.LoginParameters = GetKeyValuePairsAndSetLoginPhaseParams(str, dataSegmentLength, ref lpp);
+                                m.Padding = GetDataSegmentPadding(str, paddingLength);
+                                dispatch endpoint Server issues m;
+                            }
+                            // The text need to be continued
+                            else
+                            {
+                                optional binary data = GetDataSegment(str, dataSegmentLength);
+                                if (data != nothing)
+                                {
+                                    loginBuffer += data as binary;
+                                }
+                                m.LoginParameters = data;
+                                m.Padding = GetDataSegmentPadding(str, paddingLength);
+                                dispatch endpoint IntermediateNode issues m;
+                                
+                                // Create the reassembled message
+                                if (!m.C)
+                                {
+                                    Messages.LoginResponse rm = new Messages.LoginResponse {
+                                                            I = m.I,
+                                                            Opcode = m.Opcode,
+                                                            T = m.T,
+                                                            Csg = m.Csg,
+                                                            Nsg = m.Nsg,
+                                                            VersionMax = m.VersionMax,
+                                                            VersionMin = m.VersionMin,
+                                                            DataSegmentLength = loginBuffer.Count as uint,
+                                                            Isid = m.Isid,
+                                                            Tsih = m.Tsih,
+                                                            InitiatorTaskTag = m.InitiatorTaskTag,
+                                                            Cid = m.Cid,
+                                                            CmdSN = m.CmdSN,
+                                                            ExpStatSN = m.ExpStatSN,
+                                                            MaxCmdSN = m.MaxCmdSN,
+                                                            StatusClass = m.StatusClass,
+                                                            StatusDetails = m.StatusDetails,
+                                                            Reserved4 = m.Reserved4
+                                                        };
+                                    rm.LoginParameters = GetKeyValuePairsAndSetLoginPhaseParams(loginBuffer, loginBuffer.Count as uint, ref lpp);
+                                    rm#IsReassembled = true;
+                                    rm.SourceData = loginBuffer;
+                                    dispatch endpoint IntermediateNode issues rm;
+                                    
+                                    // Clear the buffer
+                                    loginBuffer = $[];
+                                }
+                            }
+                        default =>
+                            ThrowDecodingException("iSCSI", "LoginResponse");
+                    } 
+                case Opcodes.TextResponse =>
+                    switch (str)
+                    {
+                        case m: Messages.TextResponse from BinaryDecoder<Messages.TextResponse> =>
+                            if (!m.C && textBuffer == $[]) // The Text (data segment) is complete
+                            {
+                                m.Text = GetKeyValuePairsAndSetLoginPhaseParams(str, dataSegmentLength, ref lpp);
+                                m.Padding = GetDataSegmentPadding(str, paddingLength);
+                                dispatch endpoint Server issues m;
+                            }
+                            // The text need to be continued
+                            else
+                            {
+                                optional binary data = GetDataSegment(str, dataSegmentLength);
+                                if (data != nothing)
+                                {
+                                    textBuffer += data as binary;
+                                }
+                                m.Text = data;
+                                m.Padding = GetDataSegmentPadding(str, paddingLength);
+                                dispatch endpoint IntermediateNode issues m;
+                                    
+                                // Create the reassembled message
+                                if (!m.C)
+                                {
+                                    Messages.TextResponse rm = new Messages.TextResponse{
+                                                                Opcode = m.Opcode,
+                                                                F = m.F,
+                                                                DataSegmentLength = textBuffer.Count as uint,
+                                                                LogicalUnitNumber = m.LogicalUnitNumber,
+                                                                InitiatorTaskTag = m.InitiatorTaskTag,
+                                                                TargetTransferTag = m.TargetTransferTag,
+                                                                CmdSN = m.CmdSN,
+                                                                ExpStatSN = m.ExpStatSN,
+                                                                Reserved4 = m.Reserved4
+                                                            };
+                                    rm.Text = GetKeyValuePairsAndSetLoginPhaseParams(textBuffer, textBuffer.Count as uint, ref lpp);
+                                    rm#IsReassembled = true;
+                                    rm.SourceData = textBuffer;
+                                    dispatch endpoint IntermediateNode issues rm;
+                                        
+                                    // Clear the buffer
+                                    textBuffer = $[];
+                                }
+                            }
+                        default =>
+                            ThrowDecodingException("iSCSI", "LogoutResponse");
+                    }
+                case Opcodes.ScsiDataIn =>
+                    switch (str)
+                    {
+                        case m: Messages.ScsiDataIn from BinaryDecoder<Messages.ScsiDataIn> =>
+                            m.HeaderDigest = GetDigest(str, hasHeaderDigest);
+                            m.DataSegment = GetDataSegment(str, dataSegmentLength) as binary;
+                            m.Padding = GetDataSegmentPadding(str, paddingLength);
+                            m.DataDigest = GetDigest(str, dataSegmentLength, hasDataDigest);
+                            dispatch endpoint Server issues m;
+
+                        default =>
+                            ThrowDecodingException("iSCSI", "ScsiDataIn");
+                    }      
+                case Opcodes.LogoutResponse =>
+                    switch (str)
+                    {
+                        case m: Messages.LogoutResponse from BinaryDecoder<Messages.LogoutResponse> =>
+                            m.HeaderDigest = GetDigest(str, hasHeaderDigest);
+                            dispatch endpoint Server issues m;
+
+                        default =>
+                            ThrowDecodingException("iSCSI", "LogoutResponse");
+                    }
+                case Opcodes.ReadyToTransfer =>
+                    switch (str)
+                    {
+                        case m: Messages.ReadyToTransfer from BinaryDecoder<Messages.ReadyToTransfer> =>
+                            m.HeaderDigest = GetDigest(str, hasHeaderDigest);
+                            dispatch endpoint Server issues m;
+
+                        default =>
+                            ThrowDecodingException("iSCSI", "ReadyToTransfer");
+                    }
+                case Opcodes.AsynchronousMessage =>
+                    switch (str)
+                    {
+                        case m: Messages.AsynchronousMessage from BinaryDecoder<Messages.AsynchronousMessage> =>
+                            m.HeaderDigest = GetDigest(str, hasHeaderDigest);
+                            m.SenseDataAndiSCSIEventData = dataSegmentLength == 0? nothing : BinaryDecoder<SenseDataAndiSCSIEventData[dataSegmentLength]>(str) as SenseDataAndiSCSIEventData;
+                            m.DataDigest = GetDigest(str, dataSegmentLength, hasDataDigest);
+                            dispatch endpoint Server issues m;
+
+                        default =>
+                            ThrowDecodingException("iSCSI", "Asynchronous");
+                    }
+                case Opcodes.Reject =>
+                    switch (str)
+                    {
+                        case m: Messages.Reject from BinaryDecoder<Messages.Reject> =>
+                            m.HeaderDigest = GetDigest(str, hasHeaderDigest);
+                            m.CompleteHeaderOfBadPDU = GetDataSegment(str, 48) as binary;
+                            m.VendorSpecificData = dataSegmentLength > 48? GetDataSegment(str, dataSegmentLength - 48 as uint) as binary : $[];
+                            m.Padding = GetDataSegmentPadding(str, paddingLength);
+                            m.DataDigest = GetDigest(str, dataSegmentLength, hasDataDigest);
+                            dispatch endpoint Server issues m;
+
+                        default =>
+                            ThrowDecodingException("iSCSI", "Reject");
+                    }
+                case Opcodes.VendorSpecificCodesT0 =>
+                    DecodeAndDispatchVendorSpecificMessage(str, false, hasHeaderDigest, hasDataDigest, dataSegmentLength, paddingLength);
+                case Opcodes.VendorSpecificCodesT1 =>
+                    DecodeAndDispatchVendorSpecificMessage(str, false, hasHeaderDigest, hasDataDigest, dataSegmentLength, paddingLength);
+                case Opcodes.VendorSpecificCodesT2 =>
+                    DecodeAndDispatchVendorSpecificMessage(str, false, hasHeaderDigest, hasDataDigest, dataSegmentLength, paddingLength);
+            }
+            
+            // In case that missing the login messages, clear the buffer if remaining data is smaller than 8
+            if (lpp == null && Buffer.Count - totalPDULength <=8 && !(opcode in {Opcodes.LoginRequest, Opcodes.LoginResponse}))
+            {
+                Buffer = $[];
+                return;
+            }
+        }
+        
+        // Update the buffer
+        Buffer = Buffer.Segment(str.BytePosition);
+    }
+
+    // Check the byte value if it is the invalid iSCSI opcode
+    bool IsValidOpcode(byte opcode)
+    {
+        return ((opcode & 0x3F) as byte) is Opcodes;
+    }
+}
+
+void DecodeAndDispatchVendorSpecificMessage(stream str, bool isAccepts, bool hasHeaderDigest, bool hasDataDigest, uint dataSegmentLength, uint paddingLength)
+{
+    switch (str)
+    {
+        case m: Messages.VendorSpecificMessage from BinaryDecoder<Messages.VendorSpecificMessage> =>
+            m.HeaderDigest = GetDigest(str, hasHeaderDigest);
+            m.DataSegment = GetDataSegment(str, dataSegmentLength);
+            m.Padding = GetDataSegmentPadding(str, paddingLength);
+            m.DataDigest = GetDigest(str, dataSegmentLength, hasDataDigest);
+            if (isAccepts)
+            {
+                dispatch endpoint Server accepts m;
+            }
+            else
+            {
+                dispatch endpoint Server issues m;
+            }
+        default =>
+            ThrowDecodingException("iSCSI", "VendorSpecificMessage");
+    }
+}

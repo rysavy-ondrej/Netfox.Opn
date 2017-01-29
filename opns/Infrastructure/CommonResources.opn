@@ -1,0 +1,45 @@
+﻿// OPN common strings library
+module CommonResources;
+
+///////////////////////////////////////////////
+// Common strings
+
+string COMMON_STR_TYPE = "type";
+string COMMON_STR_MESSAGE = "message";
+string COMMON_STR_MUST = "must";
+string COMMON_STR_SHOULD = "should";
+string COMMON_STR_ZERO = "zero";
+string COMMON_STR_ENCRYPTED = "encrypted";
+string COMMON_STR_VERSION = "version";
+
+string COMMON_STR_CHECK_VALUE = "{0}: The {1} field in {2} {3} {4} be set to {5}, not {6}.";
+string COMMON_STR_CHECK_RESERVED_ZERO = "{0}: The {1} field in {2} {3} is reserved and {4} be set to {5}, not {6}.";
+string COMMON_STR_CHECK_ENUM_VALUE = "{0}: The {1} field in {2} {3} {4} be set to one of {5}, not {6}.";
+string COMMON_STR_CHECK_COMBINATION_VALUE = "{0}: The {1} field in {2} {3} {4} be set to a combination of one or more of {5}, not {6}.";
+string COMMON_STR_CHECK_COMBINATION_VALUE_INCLUDE_ZERO = "{0}: The {1} field in {2} {3} {4} be set to {5} or a combination of the values of {6}, not {7}.";
+string COMMON_STR_CHECK_VALUE_SAME = "{0}: The {1} field in {2} {3} {4} be set to same as the {5} field in {6} {7}, not {8}.";
+string COMMON_STR_CHECK_VALUE_IN_RANGE = "{0}: The {1} field in {2} {3} {4} be set in the range from {5} to {6}, not {7}.";
+string COMMON_STR_CHECK_VALUE_GREATER_THAN = "{0}: The {1} field in {2} {3} {4} be greater than {5}, not {6}.";
+string COMMON_STR_CHECK_VALUE_GREATER_THAN_OR_EQUAL_TO = "{0}: The {1} field in {2} {3} {4} be greater than or equal to {5}, not {6}.";
+string COMMON_STR_CHECK_VALUE_LESS_THAN_OR_EQUAL_TO = "{0}: The {1} field in {2} {3} {4} be less than or equal to {5}, not {6}.";
+string COMMON_STR_CHECK_VALUE_IS_NOT_A_VALID = "{0}: The {1} field in {2} {3} is not a valid {4}.";
+string COMMON_STR_CHECK_LENGTH_EQUAL = "{0}: The length of {1} field in {2} {3} {4} be {5}, not {6}.";
+
+string COMMON_STR_WINDOWS_BEHAVIOR = "Windows set it to {0}";
+
+string COMMON_STR_EXCEPTION = "{0}: Message cannot be decoded successfully.";
+string COMMON_STR_EXCEPTION_MESSAGE = "{0}: {1} cannot be decoded successfully.";
+string COMMON_STR_EXCEPTION_WITH_REASON = "{0}: Message cannot be decoded successfully due to {1}.";
+string COMMON_STR_EXCEPTION_MESSAGE_WITH_REASON = "{0}: {1} cannot be decoded successfully due to {2}.";
+
+string COMMON_STR_REPORT_INSUFFICIENT_DATA = "{0}: The {1} field in {2} {3} contains insufficient data.";
+string COMMON_STR_REPORT_INSUFFICIENT_DATA_MISSING_SEGMENT = "{0}: Insufficient data for {1} field in message {2}, due to missing lower-layer protocol segment.";
+string COMMON_STR_REPORT_INSUFFICIENT_DATA_TRUNCATED = "{0}: Insufficient data for {1} field in message {2}, due to the packet is truncated.";
+
+string COMMON_STR_TCP_ROOT_CAUSE_SEGMENT_LOST = "TCP segments lost";
+string COMMON_STR_TCP_ROOT_CAUSE_INCOMPLETE = "TCP incomplete segment";
+string COMMON_STR_TCP_ROOT_CAUSE_MISMATCH = "raw data not matching OPN message defintion";
+
+string COMMON_STR_IPV6_AND_A_MULTIPLE_OF = "and a multiple of {0}";
+
+string COMMON_STR_EMBEDDED_ANNOTATION_MISMATCH = "The value of key '{0}' in Embedded annotation does not match returned type.";

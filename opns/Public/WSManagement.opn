@@ -1,0 +1,973 @@
+﻿protocol WSManagement with 
+XmlEncodingDefaults{Namespace = WSManagementNamespace},
+Documentation
+{
+    ProtocolName = "WSManagement",
+    ShortName = "WSManagement",
+    Description = "Web Services for Management(WS-Management) Specification"
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "WSManagement", Version = "1.1.0", Link = "http://www.dmtf.org/sites/default/files/standards/documents/DSP0226_1.1.pdf"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="09/02/2011"}
+        ]
+};
+
+using IANA;
+using Utility;
+using TCP;
+using HTTP;
+using XSD;
+using SOAP;
+using SOAP11;
+using SOAP12;
+using Standard;
+using WSA2004;
+using WSA2005;
+using WSEN;
+using WSTransfer;
+using WSEventing;
+using Technologies.WSDL;
+using Technologies.SOAP;
+using VirtualTransport;
+
+endpoint Server over IntermediateServer provides OperationContract;
+client endpoint Client connected to Server;
+
+endpoint IntermediateServer
+    over SOAP.Server
+    provides EventsMessageContract;
+client endpoint IntermediateClient connected to IntermediateServer;
+
+autostart actor HTTPOverTCPServerWithWSMAN(VirtualTransport.Server server)
+{
+    process server accepts segment:VirtualTransport.VirtualDataSegment{DestinationPort is Port.WsmanHTTP}
+    {
+        dispatch (endpoint HTTP.ReassemblyServer[server]) accepts segment;
+    }
+    process server issues segment:VirtualTransport.VirtualDataSegment{SourcePort is Port.WsmanHTTP}
+    {
+        dispatch (endpoint HTTP.ReassemblyServer[server]) issues segment;
+    }
+    
+    // Below rules are added in case that TCP mistakes the Client for Server by port number for the trace without TCP 3-way handshake.
+    process server issues segment:VirtualTransport.VirtualDataSegment where server.isMissingThreeWayHandshake && segment.DestinationPort == IANA.Port.WsmanHTTP
+    {
+        dispatch (endpoint HTTP.ReassemblyServer[server]) accepts segment;
+    }
+    process server accepts segment:VirtualTransport.VirtualDataSegment where server.isMissingThreeWayHandshake && segment.SourcePort == IANA.Port.WsmanHTTP
+    {
+        dispatch (endpoint HTTP.ReassemblyServer[server]) issues segment;
+    }
+}
+
+contract OperationContract
+{
+    accepts operation EventsOp
+    {
+        in XSAnyURI Action with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+        in optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+        in optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+        
+        override string ToString()
+        {
+            return "EventsOp" + this.ExtendingSummary;
+        }
+    } with SoapMessageInfo{Action = WSManagementEventsAction};
+            
+    accepts operation DroppedEventsOp
+    {
+        in AttributableInt Text with XmlEncoding{Kind = XmlKind.Text};
+        in XSAnyURI Action with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+        in optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+        
+        override string ToString()
+        {
+            return "DroppedEventsOp" + this.ExtendingSummary;
+        }
+    } with SoapMessageInfo{Action = WSManagementDroppedEventsAction};
+}
+
+contract EventsMessageContract
+    with XmlEncodingDefaults{Namespace = WSManagementNamespace}
+{
+    accepts message EventsRequest
+    {
+       EventType EventTypes with XmlEncoding{Name = "Events"};
+       
+       override string ToString()
+       {
+            return "EventsRequest";
+       }
+    } with SoapMessageInfo{Action = WSManagementEventsAction};
+       
+    accepts message DroppedEventsRequest
+    {
+       DroppedEventsType DroppedEventsTypes with XmlEncoding{Name = "DroppedEvents"};
+       
+       override string ToString()
+       {
+            return "DroppedEventsRequest";
+       }
+    }  with SoapMessageInfo{Action = WSManagementDroppedEventsAction};
+}
+
+actor OperationActor(IntermediateServer node)
+{
+    EventsMessageContract.EventsRequest eventsRequest = null;
+    EventsMessageContract.DroppedEventsRequest droppedEventsRequest = null;
+    // Plus request
+    process node accepts req:EventsMessageContract.EventsRequest
+    {
+        var eventsOp = new OperationContract.EventsOp
+        {
+            Action       = req.EventTypes.Action,
+            AnyElement   = req.EventTypes.AnyElement,
+            AnyAttribute = req.EventTypes.AnyAttribute
+        };
+        eventsOp.Origins = [eventsRequest, req];
+        eventsRequest = null;
+        dispatch (endpoint Server over node) accepts eventsOp;
+    }
+    process node accepts req1:EventsMessageContract.DroppedEventsRequest
+    {
+        var droppedEventsOp = new OperationContract.DroppedEventsOp
+        {
+            Text         = req1.DroppedEventsTypes.Text,
+            Action       = req1.DroppedEventsTypes.Action,
+            AnyAttribute = req1.DroppedEventsTypes.AnyAttribute
+        };
+        droppedEventsOp.Origins = [droppedEventsRequest, req1];
+        droppedEventsRequest  = null;
+        dispatch (endpoint Server over node) accepts droppedEventsOp;
+    }
+}
+
+// Message actor
+autostart actor WsmanOverSOAP(SOAP.Server node) precedes SOAP.Server
+{
+    observe node issues s:SoapMessage
+    {
+        if (s.Header != nothing)
+        {
+            WsmanHeader header = ParseHeader(s.Header as xml);
+            if (!HeaderIsNull(header))
+            {
+                SetEmbedded<WsmanHeader>(s, "WSManagement", header);
+            }
+        }
+    }
+    
+    observe node accepts s:SoapMessage
+    {
+        if (s.Header != nothing)
+        {
+            WsmanHeader header = ParseHeader(s.Header as xml);
+            if (!HeaderIsNull(header))
+            {
+                SetEmbedded<WsmanHeader>(s, "WSManagement", header);
+            }
+        }
+    }
+    
+    process node accepts soap:SoapMessage where soap.Action == WSManagementEventsAction
+    {
+        switch (soap.Body)
+        {
+            case m:EventsMessageContract.EventsRequest{} from XmlDecoder<EventsMessageContract.EventsRequest> =>
+                var server = endpoint IntermediateServer over node;
+                dispatch server accepts m;
+            default =>
+                ThrowDecodingException("WSManagement", "EventsRequest");
+       }
+    }
+    
+    process node accepts soap:SoapMessage where soap.Action == WSManagementDroppedEventsAction
+    {
+        switch (soap.Body)
+        {
+            case m:EventsMessageContract.DroppedEventsRequest{} from XmlDecoder<EventsMessageContract.DroppedEventsRequest> =>
+                var server = endpoint IntermediateServer over node;
+                dispatch server accepts m;
+            default =>
+                ThrowDecodingException("WSManagement", "DroppedEventsRequest");
+       }
+    }
+}
+
+autostart actor WsmanOverWsEventingServer(WSEventing.EventSourceServer server)
+{
+    // BookMark/SendBookMarks/Filter elements all may be present in both Subscribe and Delivery elements.
+    observe server accepts subscribe:WSEventing.EventSource.SubscribeOp
+    {
+        // This is used to store the parsing result of the extended elements.
+        array<any> extendElements = [];
+        
+        if (subscribe.AnyElement1 != nothing)
+        {
+            var anyElement  = subscribe.AnyElement1 as array<xml>;
+            if (anyElement.Count > 0)
+            {
+                for(int i = 0; i < anyElement.Count; i++)
+                {
+                    switch (anyElement[i].NamespaceUri)
+                    {
+                        case "http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" =>
+                            optional XmlName name = anyElement[i].Name;
+                            if (name != nothing)
+                            {
+                                switch ((name as XmlName).LocalName)
+                                {
+                                    case "Filter" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case filter:Filter from XmlDecoder<Filter> =>
+                                                extendElements += [filter];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "Filter");
+                                        }
+                                    case "SendBookmarks" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case sendBookmarks:SendBookmarks from XmlDecoder<SendBookmarks> =>
+                                                extendElements += [sendBookmarks];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "SendBookmarks");
+                                        }
+                                    case "Bookmark" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case bookmark:Bookmark from XmlDecoder<Bookmark> =>
+                                                extendElements += [bookmark];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "Bookmark");
+                                        }
+                                }
+                            }
+                    }
+                }
+            }
+        }
+        
+        if (subscribe.Delivery.AnyElement != nothing)
+        {
+            var anyElement  = subscribe.Delivery.AnyElement as array<xml>;
+            if (anyElement.Count > 0)
+            {
+                for(int i = 0; i < anyElement.Count; i++)
+                {
+                    switch (anyElement[i].NamespaceUri)
+                    {
+                        case "http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" =>
+                            optional XmlName name = anyElement[i].Name;
+                            if (name != nothing)
+                            {
+                                switch ((name as XmlName).LocalName)
+                                {
+                                    case "Locale" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case locale:Locale from XmlDecoder<Locale> =>
+                                                extendElements += [locale];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "Locale");
+                                        }
+                                    case "ContentEncoding" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case contentEncoding:ContentEncoding from XmlDecoder<ContentEncoding> =>
+                                                extendElements += [contentEncoding];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "ContentEncoding");
+                                        }
+                                    case "ConnectionRetry" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case connectionRetry:ConnectionRetry from XmlDecoder<ConnectionRetry> =>
+                                                extendElements += [connectionRetry];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "ConnectionRetry");
+                                        }
+                                    case "Heartbeats" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case heartbeats:Heartbeats from XmlDecoder<Heartbeats> =>
+                                                extendElements += [heartbeats];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "Heartbeats");
+                                        }
+                                    case "MaxEnvelopeSize" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case maxEnvelopeSize:MaxEnvelopeSize from XmlDecoder<MaxEnvelopeSize> =>
+                                                extendElements += [maxEnvelopeSize];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "MaxEnvelopeSize");
+                                        }
+                                    case "MaxElements" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case maxElements:MaxElements from XmlDecoder<MaxElements> =>
+                                                extendElements += [maxElements];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "MaxElements");
+                                        }
+                                    case "MaxTime" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case maxTime:MaxTime from XmlDecoder<MaxTime> =>
+                                                extendElements += [maxTime];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "MaxTime");
+                                        }
+                                }
+                            }
+                    }
+                }
+            }
+        }
+
+        if (extendElements.Count > 0)
+        {
+            SetEmbedded<array<any>>(subscribe, "WsmanOnSubscribe", extendElements);
+            subscribe.AppendExtendingSummary(", Extended by WSManagement");
+        }
+    }
+}
+
+autostart actor WsmanOverWsenServer(WSEN.Server server)
+{
+    observe server accepts enumerate:WSEN.DataSource.EnumerateOp
+    {
+        // This is used to store the parsing result of the extended elements.
+        array<any> extendElements = [];
+        
+        //if (enumerate.Enumerate.AnyElement != nothing)
+        if (enumerate.AnyElement != nothing)
+        {
+            //var anyElement  = enumerate.Enumerate.AnyElement;
+            var anyElement  = enumerate.AnyElement as array<xml>;
+            if (anyElement.Count > 0)
+            {
+                for(int i = 0; i < anyElement.Count; i++)
+                {
+                    switch (anyElement[i].NamespaceUri)
+                    {
+                        case "http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" =>
+                            if (anyElement[i].Name != nothing)
+                            {
+                                switch ((anyElement[i].Name as XmlName).LocalName)
+                                {
+                                    case "OptimizeEnumeration" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case optimizeEnumeration:OptimizeEnumeration from XmlDecoder<OptimizeEnumeration> =>
+                                                extendElements += [optimizeEnumeration];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "OptimizeEnumeration");
+                                        }
+                                    case "MaxElements" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case maxElements:MaxElements from XmlDecoder<MaxElements> =>
+                                                extendElements += [maxElements];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "MaxElements");
+                                        }
+                                    case "Filter" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case filter:Filter from XmlDecoder<Filter> =>
+                                                extendElements += [filter];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "Filter");
+                                        }
+                                    case "EnumerationMode" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case enumerationMode:EnumerationMode from XmlDecoder<EnumerationMode> =>
+                                                extendElements += [enumerationMode];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "EnumerationMode");
+                                        }
+                                }
+                            }
+                    }
+                }
+            }
+            if (extendElements.Count > 0)
+                {
+                    SetEmbedded<array<any>>(enumerate, "WsmanOnEnumerate", extendElements);
+                    enumerate.AppendExtendingSummary(", Extended by WSManagement");
+                }
+        }
+
+        // This is used to store the parsing result of the extended elements.
+        extendElements = [];
+        
+        if (enumerate.AnyElement2 != nothing)
+        {
+            var anyElement  = enumerate.AnyElement2 as array<xml>;
+            if (anyElement.Count > 0)
+            {
+                for(int i = 0; i < anyElement.Count; i++)
+                {
+                    switch (anyElement[i].NamespaceUri)
+                    {
+                        case "http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" =>
+                            if (anyElement[i].Name != nothing)
+                            {
+                                switch ((anyElement[i].Name as XmlName).LocalName)
+                                {
+                                    case "Items" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case items:Items from XmlDecoder<Items> =>
+                                                extendElements += [items];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "Items");
+                                        }
+                                    case "EndOfSequence" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case endOfSequence:EndOfSequence from XmlDecoder<EndOfSequence> =>
+                                                extendElements += [endOfSequence];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "EndOfSequence");
+                                        }
+                                }
+                            }
+                    }
+                }
+            }
+            if (extendElements.Count > 0)
+                {
+                    SetEmbedded<array<any>>(enumerate, "WsmanOnEnumerateResponse", extendElements);
+                    enumerate.AppendExtendingSummary(", Extended by WSManagement");
+                }
+        }
+    }
+    
+    observe server accepts pull:WSEN.DataSource.PullOp
+    {
+        // This is used to store the parsing result of the extended elements.
+        array<any> extendElements = [];
+        
+        if (pull.Items != nothing && (pull.Items as ItemListType).AnyElement != nothing)  
+        {
+            var anyElement  = (pull.Items as ItemListType).AnyElement as array<xml>;
+            if (anyElement.Count > 0)
+            {
+                for(int i = 0; i < anyElement.Count; i++)
+                {
+                    switch (anyElement[i].NamespaceUri)
+                    {
+                        case "http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" =>
+                            if (anyElement[i].Name != nothing)
+                            {
+                                switch ((anyElement[i].Name as XmlName).LocalName)
+                                {
+                                    case "XmlFragment" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case xmlFragment:XmlFragment from XmlDecoder<XmlFragment> =>
+                                                extendElements += [xmlFragment];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "XmlFragment");
+                                        }
+                                    // 8.7 Enumeration of EPRs
+                                    case "Item" =>
+                                        switch (anyElement[i])
+                                        {
+                                            case item:Item from XmlDecoder<Item> =>
+                                                extendElements += [item];
+                                            default =>
+                                                ThrowDecodingException("WSManagement", "Item");
+                                        }
+                                }
+                            }
+                    }
+                }
+                
+                if (extendElements.Count > 0)
+                {
+                    SetEmbedded<array<any>>(pull, "WsmanOnPullResponse", extendElements);
+                    pull.AppendExtendingSummary(", Extended by WSManagement");
+                }
+            }
+        }
+    }
+}
+
+autostart actor WsmanOverWsTransferServer(WSTransfer.ResourceIntermidiateEndpoint server)
+{
+    observe server issues getResponse:WSTransfer.ResourceMessageContract.GetResourceResponse
+    {
+        // This is used to store the parsing result of the extended elements.
+        array<any> extendElements;
+
+        DecodeXmlFragment(getResponse.AnyElement, out extendElements);
+
+        if (extendElements != null)
+        {
+            SetEmbedded<array<any>>(getResponse, "WsmanOnGetResponse", extendElements);
+            getResponse.AppendExtendingSummary(", Extended by WSManagement");
+        }
+    }
+    observe server accepts putReq:WSTransfer.ResourceMessageContract.PutResourceRequest
+    {
+        // This is used to store the parsing result of the extended elements.
+        array<any> extendElements;
+
+        DecodeXmlFragment(putReq.AnyElement, out extendElements);
+
+        if (extendElements != null)
+        {
+            SetEmbedded<array<any>>(putReq, "WsmanOnPutRequest", extendElements);
+            putReq.AppendExtendingSummary(", Extended by WSManagement");
+        }
+    }
+    observe server issues putResp:WSTransfer.ResourceMessageContract.PutResourceResponse
+    {
+        // This is used to store the parsing result of the extended elements.
+        array<any> extendElements;
+
+        DecodeXmlFragment(putResp.AnyOptionalElement, out extendElements);
+
+        if (extendElements != null)
+        {
+            SetEmbedded<array<any>>(putResp, "WsmanOnPutResponse", extendElements);
+            putResp.AppendExtendingSummary(", Extended by WSManagement");
+        }
+    }
+    // Delete both request/response don't contain any body according to the fragment access part 7.7 in WS-Management.
+    
+    observe server accepts createReq:WSTransfer.ResourceFactoryMessageContract.CreateRequest
+    {
+        // This is used to store the parsing result of the extended elements.
+        array<any> extendElements;
+
+        DecodeXmlFragment(createReq.AnyElement, out extendElements);
+
+        if (extendElements != null)
+        {
+            SetEmbedded<array<any>>(createReq, "WsmanOnResourceCreateRequest", extendElements);
+            createReq.AppendExtendingSummary(", Extended by WSManagement");
+        }
+    }
+}
+
+void DecodeXmlFragment(optional xml anyOptionalElement, out array<any> extendElements)
+{
+    if (anyOptionalElement is nothing)
+    {
+        return;
+    }
+    var anyElement = anyOptionalElement as xml;
+    switch (anyElement.NamespaceUri)
+    {
+        case "http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" =>
+        if (anyElement.Name != nothing)
+        {
+            switch ((anyElement.Name as XmlName).LocalName)
+            {
+                case "XmlFragment" =>
+                    switch (anyElement)
+                    {
+                        case xmlFragment:XmlFragment from XmlDecoder<XmlFragment> =>
+                            if (extendElements == null)
+                            {
+                                extendElements = [xmlFragment];
+                            }
+                            else
+                            {
+                                extendElements += [xmlFragment];
+                            }
+                        default =>
+                            ThrowDecodingException("WSManagement", "XmlFragment");
+                    }
+            }
+        }
+    }
+}
+
+pattern AnyEPRType = (WSA2004.EndpointReferenceType | WSA2005.EndpointReferenceType) with XmlEncoding{Name = "ResourceCreated", Namespace = WSTransferNamespace};
+
+// Future Reference: Extract a method to reuse the parsing logic.
+WsmanHeader ParseHeader(xml soapHeader)
+{
+    WsmanHeader header = new WsmanHeader{};
+    // WS-Management Default Addressing Model
+    header.ResourceURI = DecodeFromChildXmlElement<ResourceURI>(soapHeader, WSManagementNamespace, "ResourceURI");
+    header.SelectorSet = DecodeFromChildXmlElement<SelectorSetType>(soapHeader, WSManagementNamespace, "SelectorSet");
+    
+    // 6 WS-Management Control Headers
+    header.OperationTimeout = DecodeFromChildXmlElement<OperationTimeout>(soapHeader, WSManagementNamespace, "OperationTimeout");
+    header.MaxEnvelopeSize = DecodeFromChildXmlElement<MaxEnvelopeSize>(soapHeader, WSManagementNamespace, "MaxEnvelopeSize");
+    header.Locale = DecodeFromChildXmlElement<Locale>(soapHeader, WSManagementNamespace, "Locale");
+    header.OptionSet = DecodeFromChildXmlElement<OptionSet>(soapHeader, WSManagementNamespace, "OptionSet"); //header.Option = DecodeFromChildXmlElement<OptionType>(soapHeader, WSManagementNamespace, "Option");
+    header.RequestEPR = DecodeFromChildXmlElement<RequestEPR>(soapHeader, WSManagementNamespace, "RequestEPR");
+    header.RequestedEPR = DecodeFromChildXmlElement<RequestedEPR>(soapHeader, WSManagementNamespace, "RequestedEPR");
+    
+    // Other possible headers
+    header.FragmentTransfer = DecodeFromChildXmlElement<FragmentTransfer>(soapHeader, WSManagementNamespace, "FragmentTransfer");
+    header.RequestTotalItemsCountEstimate = DecodeFromChildXmlElement<RequestTotalItemsCountEstimate>(soapHeader, WSManagementNamespace, "RequestTotalItemsCountEstimate");
+    header.TotalItemsCountEstimate = DecodeFromChildXmlElement<TotalItemsCountEstimate>(soapHeader, WSManagementNamespace, "TotalItemsCountEstimate");
+    header.Bookmark = DecodeFromChildXmlElement<Bookmark>(soapHeader, WSManagementNamespace, "Bookmark");
+    header.AckRequested = DecodeFromChildXmlElement<AckRequested>(soapHeader, WSManagementNamespace, "AckRequested");
+    header.NotUnderstood = DecodeFromChildXmlElement<NotUnderstood>(soapHeader, Soap12Namespace, "NotUnderstood");
+    return header;
+}
+
+bool HeaderIsNull(WsmanHeader h)
+{
+    if (h.ResourceURI == nothing && h.SelectorSet == nothing && h.OperationTimeout == nothing && h.MaxEnvelopeSize == nothing && h.Locale == nothing 
+            && h.OptionSet == nothing && h.RequestEPR == nothing && h.RequestedEPR == nothing && h.FragmentTransfer == nothing 
+            && h.RequestTotalItemsCountEstimate == nothing && h.TotalItemsCountEstimate == nothing && h.Bookmark == nothing 
+            && h.AckRequested == nothing && h.NotUnderstood == nothing)
+            {
+                return true;
+            }
+        
+    return false;
+}
+
+type WsmanHeader
+{
+    // WS-Management Default Addressing Model
+    optional ResourceURI ResourceURI;
+    optional SelectorSetType SelectorSet;
+    
+    // 6 WS-Management Control Headers
+    optional OperationTimeout OperationTimeout;
+    optional MaxEnvelopeSizeType MaxEnvelopeSize;
+    optional Locale Locale;
+    optional OptionSet OptionSet; //optional OptionType Option;
+    optional RequestEPR RequestEPR;
+    optional RequestedEPR RequestedEPR;
+    
+    // A conformant service that supports fragment-level access shall accept the following 2624 SOAP header in all requests and include it in all responses that transport the fragments
+    optional FragmentTransfer FragmentTransfer;
+    // These SOAP headers are defined for use with the Enumerate and Pull messages and their 3272 responses. The header used in Enumerate and Pull is as follows
+    optional RequestTotalItemsCountEstimate RequestTotalItemsCountEstimate;
+    // The header used by the service to return the value is as follows
+    optional TotalItemsCountEstimate TotalItemsCountEstimate;
+    // 10.2.6 Bookmarks, If bookmarks are requested, each event delivery contains a new bookmark value as a SOAP header, 4578 as shown in the following outline
+    optional Bookmark Bookmark;
+    // 10.7 Acknowledgement of Delivery, If an acknowledged delivery mode is selected for the subscription, the service shall 5232 include the following SOAP headers in each event delivery
+    optional AckRequested AckRequested;
+    
+    // There is a special case for faults relating to mustUnderstand attributes on SOAP headers
+    optional NotUnderstood NotUnderstood;
+}
+
+type NotUnderstood
+{
+    string qname with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+    string $"xmlns:ns" with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+} with XmlEncoding{Namespace = Soap12Namespace};
+
+type attributableURI
+{
+    XSAnyURI anyURI with XmlEncoding{Kind = XmlKind.Text};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+pattern ResourceURI = attributableURI with XmlEncoding{Name = "ResourceURI"};
+
+type AttributableDuration
+{
+    XSDuration Duration with XmlEncoding{Kind = XmlKind.Text};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+pattern OperationTimeout = AttributableDuration with XmlEncoding{Name = "OperationTimeout"};
+
+type AttributablePositiveInteger
+{
+    XSpositiveInteger Text with XmlEncoding{Kind = XmlKind.Text};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+type MaxEnvelopeSizeType
+{
+    optional string Policy with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+    XSpositiveInteger Text with XmlEncoding{Kind = XmlKind.Text};
+}
+
+pattern PolicyType = enum string
+{
+    CancelSubscription = "CancelSubscription",
+    Skip = "Skip",
+    Notify  = "Notify",
+};
+
+pattern MaxEnvelopeSize = MaxEnvelopeSizeType with XmlEncoding{Name = "MaxEnvelopeSize"};
+
+type Locale
+{
+    string Lang with XmlEncoding{Name = "lang", 
+                                 Kind = XmlKind.Attribute, 
+                                 Namespace = "http://www.w3.org/XML/1998/namespace"};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+type SelectorSetType 
+{
+    array<SelectorType> Selector with XmlEncoding{Kind = XmlKind.Element};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+// Instances of this type can be only simple types or EPRs, not arbitrary mixed data.
+type SelectorType 
+{
+    XSNCName Name with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+    optional string Text with XmlEncoding{Kind = XmlKind.Text};
+    optional WSA2004.EndpointReferenceType EndpointReference 
+        with XmlEncoding{Kind = XmlKind.Element, Namespace = WSAddressingKey};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+pattern OptionSet = OptionSetType with XmlEncoding{Name = "OptionSet"};
+
+type OptionSetType 
+{
+    array<OptionType> Options with XmlEncoding{Name = "Option", Kind = XmlKind.Element};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+type OptionType 
+{
+    optional string Text with XmlEncoding{Kind = XmlKind.Text};
+    optional XSQName Name with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+    optional XSBoolean MustComply with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+    optional XSQName Type with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+pattern FragmentTransfer = FragmentMixedDataType with XmlEncoding{Name = "FragmentTransfer"};
+
+type FragmentMixedDataType
+{
+    optional XSAnyURI Dialect with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+    optional string Text with XmlEncoding{Kind = XmlKind.Text};
+    //optional string MustUnderstand with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+// Future Reference: there's a mixed = “true” for charater data which could appear between elements, how to declare them clearly in OPN ?
+type MixedDataType
+{
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other}; 
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+pattern RequestTotalItemsCountEstimate = AttributableEmpty with XmlEncoding{Name = "RequestTotalItemsCountEstimate"};
+pattern Bookmark = MixedDataType with XmlEncoding{Name = "Bookmark"};
+pattern AckRequested = AttributableEmpty with XmlEncoding{Name = "AckRequested"};
+pattern RequestEPR = AttributableEmpty with XmlEncoding{Name = "RequestEPR"};
+pattern RequestedEPR = RequestedEPRType with XmlEncoding{Name = "RequestedEPR"};
+
+type AttributableEmpty
+{
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+type RequestedEPRType
+{
+    RequestedEPRTypeChoiceElement EPR;
+    optional array<xml> AnyAttribute with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+}
+
+pattern RequestedEPRTypeChoiceElement = EndpointReferenceInRequestedEPRType | EPRInvalid | EPRUnknown;
+pattern EndpointReferenceInRequestedEPRType = WSA2004.EndpointReferenceType with XmlEncoding{Namespace = WSAddressing2004Namespace};
+pattern EPRInvalid = AttributableEmpty with XmlEncoding{Name = "EPRInvalid"};
+pattern EPRUnknown = AttributableEmpty with XmlEncoding{Name = "EPRUnknown"};
+
+type AttributableNonNegativeInteger
+{
+    XSNonNegativeInteger Text with XmlEncoding{Kind = XmlKind.Text};
+    optional array<xml> AnyAttribute with XmlEncoding{Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Any};
+}
+
+pattern XmlFragment = MixedDataType with XmlEncoding{Name = "XmlFragment"};
+
+pattern OptimizeEnumeration = AttributableEmpty with XmlEncoding{Name = "OptimizeEnumeration"};
+
+pattern TotalItemsCountEstimate = AttributableNonNegativeInteger with XmlEncoding{Name = "TotalItemsCountEstimate"};
+
+pattern MaxElements = AttributablePositiveInteger with XmlEncoding{Name = "MaxElements"};
+
+type EnumerationModeType
+{
+    enum Token
+    {
+        EnumerateEPR = "EnumerateEPR",
+        EnumerateObjectAndEPR = "EnumerateObjectAndEPR",
+    } Mode with XmlEncoding{Kind = XmlKind.Text};
+}
+
+pattern EnumerationMode = EnumerationModeType with XmlEncoding{Name = "EnumerationMode"};
+
+pattern Filter = FilterMixedDataType with XmlEncoding{Name = "Filter"};
+
+// Future Reference: mixed = true
+type FilterMixedDataType
+{
+    optional XSAnyURI Dialect with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+    optional string Text with XmlEncoding{Kind = XmlKind.Text};
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Any};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Any};
+}
+
+type MixedDataFilterTypeMixed
+{
+    string Text with XmlEncoding{Kind = XmlKind.Text};
+    xml Any with XmlEncoding{Kind = XmlKind.Element};
+}with XmlEncoding{AnonymousType = true};
+
+type ObjectAndEPRType
+{
+    WSA2004.EndpointReferenceType EndpointReference with XmlEncoding{Kind = XmlKind.Element ,Namespace = WSAddressing2004Namespace};
+    // wsman.xsd seems have issue here, it defined Any as the first sibling, but actually switch to the last one.
+    optional xml AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Any};
+}
+
+pattern Item = ObjectAndEPRType with XmlEncoding{Name = "Item"};
+
+type AnyListType
+{
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+pattern Items = AnyListType with XmlEncoding{Name = "Items"};
+
+pattern EndOfSequence = AttributableEmpty with XmlEncoding{Name = "EndOfSequence"};
+
+type AttributableLanguage
+{
+    string Text with XmlEncoding{Kind = XmlKind.Text};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+pattern ContentEncoding = AttributableLanguage with XmlEncoding{Name = "ContentEncoding"};
+
+type ConnectionRetryType
+{
+    optional UnsignedLong Total with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+    optional AttributableDuration Text with XmlEncoding{Kind = XmlKind.Text};
+}
+
+pattern ConnectionRetry = ConnectionRetryType with XmlEncoding{Name = "ConnectionRetry"};
+pattern Heartbeats = AttributableDuration with XmlEncoding{Name = "Heartbeats"};
+pattern SendBookmarks = AttributableEmpty with XmlEncoding{Name = "SendBookmarks"};
+pattern MaxTime = AttributableDuration with XmlEncoding{Name = "MaxTime"};
+
+type AttributableAny
+{
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+type EventType
+{
+    XSAnyURI Action with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+type EventsType
+{
+    array<Event> Event with XmlEncoding{Kind = XmlKind.Element};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+pattern Events = EventType with XmlEncoding{Name = "Events"};
+pattern Event = EventType with XmlEncoding{Name = "Event"};
+
+type DroppedEventsType
+{
+    AttributableInt Text with XmlEncoding{Kind = XmlKind.Text};
+    XSAnyURI Action with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+pattern AttributableInt = XSInt;
+
+pattern DroppedEvents = DroppedEventsType with XmlEncoding{Name = "DroppedEvents"};
+
+pattern RestrictedProfileType = enum XSAnyURI
+{
+    HttpBasic = "http://schemas.dmtf.org/wbem/wsman/1/wsman/secprofile/http/basic",
+    HttpDigest = "http://schemas.dmtf.org/wbem/wsman/1/wsman/secprofile/http/digest",
+    HttpsBasic = "http://schemas.dmtf.org/wbem/wsman/1/wsman/secprofile/https/basic",
+    HttpsDigest = "http://schemas.dmtf.org/wbem/wsman/1/wsman/secprofile/https/digest",
+    HttpsMutual = "http://schemas.dmtf.org/wbem/wsman/1/wsman/secprofile/https/mutual",
+    HttpsMutualBasic = "http://schemas.dmtf.org/wbem/wsman/1/wsman/secprofile/https/mutual/basic",
+    HttpsMutualDigest = "http://schemas.dmtf.org/wbem/wsman/1/wsman/secprofile/https/mutual/digest",
+    HttpsSK = "http://schemas.dmtf.org/wbem/wsman/1/wsman/secprofile/https/spnego-kerberos",
+    HttpsMutualSK = "http://schemas.dmtf.org/wbem/wsman/1/wsman/secprofile/https/mutual/spnego-kerberos",
+    HttpSK = "http://schemas.dmtf.org/wbem/wsman/1/wsman/secprofile/http/spnego-kerberos",
+};
+
+pattern ProfileType = RestrictedProfileType | XSAnyURI;
+
+type AuthType
+{
+    ProfileType Profile with XmlEncoding{Kind = XmlKind.Attribute, Namespace = ""};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+pattern Auth = AuthType with XmlEncoding{Name = "Auth"};
+
+pattern ThumbprintType = string; //regex {[0-9a-fA-F]{40}};
+
+pattern RestrictedFaultDetailType = enum XSAnyURI
+{
+    ActionMismatch = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/ActionMismatch",
+    Ack = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/Ack",
+    AddressingMode = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/AddressingMode",
+    AsynchronousRequest = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/AsynchronousRequest",
+    Bookmarks = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/Bookmarks",
+    CharacterSet = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/CharacterSet",
+    MissingValues = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/MissingValues",
+    NotSupported = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/NotSupported",
+    OperationTimeout = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/OperationTimeout",
+    OptionLimit = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/OptionLimit",
+    ResourceOffline = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/ResourceOffline",
+    SelectorLimit = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/SelectorLimit",
+    ServiceEnvelopeLimit = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/ServiceEnvelopeLimit",
+    TypeMismatch = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/TypeMismatch",
+    UnexpectedSelectors = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/UnexpectedSelectors",
+    UnreportableSuccess = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/UnreportableSuccess",
+    UnsupportedCharacter = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/UnsupportedCharacter",
+    UnusableAddress = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/UnusableAddress",
+    URILimitExceeded = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/URILimitExceeded",
+    Whitespace = "http://schemas.dmtf.org/wbem/wsman/1/wsman/faultDetail/Whitespace",
+};
+
+pattern CertificateThumbprint = ThumbprintType with XmlEncoding{Name = "CertificateThumbprint"};
+pattern FaultDetailType = RestrictedFaultDetailType | XSAnyURI;
+pattern FaultDetail = FaultDetailType with XmlEncoding{Kind = XmlKind.Element};
+pattern FragmentDialect = AttributableURI with XmlEncoding{Kind = XmlKind.Element};
+pattern SupportedSelectorName = XSNCName with XmlEncoding{Name = "SupportedSelectorName"};
+
+type AttributableURI
+{
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+// Constant declaration: namespace for WSManagement
+const string WSManagementNamespace = "http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd";
+const string WSManagementEventsAction = WSManagementNamespace + "/Events";
+const string WSManagementDroppedEventsAction = WSManagementNamespace + "/DroppedEvents";
+const string WSAddressingKey = "http://schemas.xmlsoap.org/ws/2004/08/addressing";

@@ -1,0 +1,207 @@
+protocol WSA with 
+Documentation
+{
+    ProtocolName = "Web Service Addressing",
+    ShortName = "WSA",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "WSA", Link = "http://www.w3.org/TR/ws-addr-core/"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+        ]
+};
+
+using WSA2005;
+using WSA2004;
+using SOAP;
+using Utility;
+using Standard;
+
+endpoint Server
+    over SOAP.Server 
+    accepts SoapMessage
+    issues SoapMessage;
+
+client endpoint Client connected to Server;
+
+autostart actor WSAOverSOAP(SOAP.Server node) precedes SOAP.Server
+{
+    observe node issues s:SoapMessage
+    {
+        if (s.Header != null && s.Header != nothing)
+        {
+            WSAHeaderFromSoapMessage(s);
+        }
+    }
+    
+    observe node accepts s:SoapMessage
+    {
+        if (s.Header != null && s.Header != nothing)
+        {
+            WSAHeaderFromSoapMessage(s);
+        }
+    }
+}
+
+void WSAHeaderFromSoapMessage(SoapMessage s)
+{
+    WsaHeaders header = new WsaHeaders();
+
+    // Firstly try to decode WSA2005 headers
+    xml headerXml = s.Header as xml;
+    if (headerXml.GetChild(new XmlName{NamespaceUri = WSAddressing2005Namespace, LocalName = "Action"}) != nothing)
+    {
+        var messageId2005 = DecodeFromChildXmlElement<WSA2005.MessageID>(headerXml, WSAddressing2005Namespace, "MessageID");
+        if (messageId2005 != nothing)
+        {
+            header.MessageID = messageId2005 as WSA2005.MessageID;
+        }
+    
+        var relatesTo2005 = DecodeFromChildXmlElement<WSA2005.RelatesTo>(headerXml, WSAddressing2005Namespace, "RelatesTo");
+        if (relatesTo2005 != nothing)
+        {
+            header.RelatesTo = relatesTo2005 as WSA2005.RelatesTo;
+        }
+        
+        optional xml element = headerXml.GetChild(new XmlName{NamespaceUri = WSAddressing2005Namespace, LocalName = "ReplyTo"});
+        if (element != nothing)
+        {
+            var replyTo1 = XmlDecoder<WSA2005.ReplyTo1>(element as xml);
+            if (replyTo1 == nothing)
+            {
+                var replyTo2 = XmlDecoder<WSA2005.ReplyTo2>(element as xml);
+                header.ReplyTo = replyTo2 as WSA2005.ReplyTo2;
+            }
+            else
+            {
+                header.ReplyTo = replyTo1 as WSA2005.ReplyTo1;
+            }
+        }
+    
+        var from2005 = DecodeFromChildXmlElement<WSA2005.From>(headerXml, WSAddressing2005Namespace, "From");
+        if (from2005 != nothing)
+        {
+            header.From = from2005 as WSA2005.From;
+        }
+    
+        var faultTo2005 = DecodeFromChildXmlElement<WSA2005.FaultTo>(headerXml, WSAddressing2005Namespace, "FaultTo");
+        if (faultTo2005 != nothing)
+        {
+            header.FaultTo = faultTo2005 as WSA2005.FaultTo;
+        }
+    
+        var to2005 = DecodeFromChildXmlElement<WSA2005.To>(headerXml, WSAddressing2005Namespace, "To");
+        if (to2005 != nothing)
+        {
+            header.To = to2005 as WSA2005.To;
+        }
+    
+        var action2005 = DecodeFromChildXmlElement<WSA2005.Action>(headerXml, WSAddressing2005Namespace, "Action");
+        if (action2005 != nothing)
+        {
+            header.Action = (action2005 as WSA2005.Action).URI.Trim();
+        }
+    }
+    else if (headerXml.GetChild(new XmlName{NamespaceUri = WSAddressing2004Namespace, LocalName = "Action"}) != nothing
+                || headerXml.GetChild(new XmlName{NamespaceUri = WSAddressing200403Namespace, LocalName = "Action"}) != nothing)
+    {
+        string wsa2004Namespace;
+        
+        if (headerXml.GetChild(new XmlName{NamespaceUri = WSAddressing2004Namespace, LocalName = "Action"}) != nothing)
+        {
+            var replyTo2004 = DecodeFromChildXmlElement<WSA2004.ReplyTo>(headerXml, WSAddressing2004Namespace, "ReplyTo");
+            if (replyTo2004 != nothing)
+            {
+                header.ReplyTo = replyTo2004 as WSA2004.ReplyTo;
+            }
+            wsa2004Namespace = WSAddressing2004Namespace;
+        }
+        else
+        {
+            var replyTo200403 = DecodeFromChildXmlElement<WSA2004.ReplyTo03>(headerXml, WSAddressing200403Namespace, "ReplyTo");
+            if (replyTo200403 != nothing)
+            {
+                header.ReplyTo = replyTo200403 as WSA2004.ReplyTo03;
+            }
+            wsa2004Namespace = WSAddressing200403Namespace;
+        }
+        
+        var messageId2004 = DecodeFromChildXmlElement<WSA2004.MessageID>(headerXml, wsa2004Namespace, "MessageID");
+        if (messageId2004 != nothing)
+        {
+            header.MessageID = messageId2004 as WSA2004.MessageID;
+        }
+            
+        var relatesTo2004 = DecodeFromChildXmlElement<WSA2004.RelatesTo>(headerXml, wsa2004Namespace, "RelatesTo");
+        if (relatesTo2004 != nothing)
+        {
+            header.RelatesTo = relatesTo2004 as WSA2004.RelatesTo;
+        }
+        
+        var from2004 = DecodeFromChildXmlElement<WSA2004.From>(headerXml, wsa2004Namespace, "From");
+        if (from2004 != nothing)
+        {
+            header.From = from2004 as WSA2004.From;
+        }
+        
+        var faultTo2004 = DecodeFromChildXmlElement<WSA2004.FaultTo>(headerXml, wsa2004Namespace, "FaultTo");
+        if (faultTo2004 != nothing)
+        {
+            header.FaultTo = faultTo2004 as WSA2004.FaultTo;
+        }
+        
+        var to2004 = DecodeFromChildXmlElement<WSA2004.To>(headerXml, wsa2004Namespace, "To");
+        if (to2004 != nothing)
+        {
+            header.To = to2004 as WSA2004.To;
+        }
+        
+        var action2004 = DecodeFromChildXmlElement<WSA2004.Action>(headerXml, wsa2004Namespace, "Action");
+        if (action2004 != nothing)
+        {
+            header.Action = (action2004 as WSA2004.Action).URI.Trim();
+        }
+    }
+    
+    ValidationCheck(header.Action != null, null, "WSA: SoapMessage.Header must have Action element.");
+    if (header.Action != null)
+    {
+        s.Wsa = header;
+        s.Action = header.Action;
+    }
+}
+
+WsaHeaders get Wsa(this SoapMessage s) 
+{
+    var wsa = GetEmbedded<WsaHeaders>(s, "WSA");
+    if (wsa == nothing)
+    {
+        return null;
+    }
+    
+    return wsa as WsaHeaders;
+}
+
+void set Wsa(this SoapMessage s, WsaHeaders header) 
+{
+    SetEmbedded<WsaHeaders>(s, "WSA", header);
+}
+
+type WsaHeaders
+{
+    optional (WSA2005.MessageID | WSA2004.MessageID) MessageID;
+    optional (WSA2005.RelatesTo | WSA2004.RelatesTo) RelatesTo;
+    optional (WSA2005.To | WSA2004.To) To;
+    string Action;
+    optional (WSA2005.From | WSA2004.From) From;
+    optional (WSA2005.ReplyTo | WSA2004.ReplyTo | WSA2004.ReplyTo03) ReplyTo;
+    optional (WSA2005.FaultTo | WSA2004.FaultTo) FaultTo;
+} 
+

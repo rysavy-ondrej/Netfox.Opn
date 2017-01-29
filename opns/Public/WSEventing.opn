@@ -1,0 +1,689 @@
+protocol WSEventing with 
+XmlEncodingDefaults{Namespace = WSEventingNamespace},
+Documentation
+{
+    ProtocolName = "Web Service Eventing",
+    ShortName = "WSEventing",
+    Description = "WS-Eventing is a protocol for one Web service (called a subscriber) to register interest (called a subscription) with another Web service (called an event source) in receiving messages about events (called notifications or event messages). "
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "WSEventing", Link = "http://www.w3.org/Submission/WS-Eventing/"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="09/02/2011"}
+        ]
+};
+
+using SOAP;
+using Standard;
+using Utility;
+using XSD;
+using WSA2004;
+using Technologies.SOAP;
+
+// Endpoint: EventSourceServer
+// Description: This endpoint accepts or issues messages defined in EventSource.
+endpoint EventSourceServer 
+    over EventSourceIntermidiateEndpoint
+    provides EventSource;
+    
+// Endpoint: SubscriptionManagerServer
+// Description: This endpoint accepts or issues messages defined in SubscriptionManager.
+endpoint SubscriptionManagerServer 
+    over SubscriptionManagerIntermidiateEndpoint
+    provides SubscriptionManager;
+    
+// Actor: EventSourceActor
+// Description: This actor listen to WS(endpoint) defined in WebService.opn can process messages if match successfully. 
+autostart actor EventSourceActor( EventSourceIntermidiateEndpoint node)
+{
+    // Subscribe request;
+    EventSourceMessageContract.SubscribeRequest subscribeRequest = null;
+    process node accepts req:EventSourceMessageContract.SubscribeRequest
+    {
+        if (subscribeRequest == null)
+        {
+            subscribeRequest = req;
+        }
+        else
+        {
+            ValidationCheck(false, subscribeRequest, "WSEventing: Incomplete Subscribe operation due to missing response.");
+            DisplayTopLevelMessage(subscribeRequest);
+            subscribeRequest = req;
+        }
+    } 
+    
+    // Subscribe response
+    process node issues res:EventSourceMessageContract.SubscribeResponse
+    {
+        if (subscribeRequest == null)
+        {
+            ValidationCheck(false, res, "WSEventing: Incomplete Subscribe operation due to missing request.");
+            reject;
+        }
+        else
+        {
+            var subscribeOp = new EventSource.SubscribeOp
+                            {
+                                EndTo = subscribeRequest.Subscribe.EndTo,
+                                Delivery = subscribeRequest.Subscribe.Delivery,
+                                Expires1 = subscribeRequest.Subscribe.Expires,
+                                Filter = subscribeRequest.Subscribe.Filter,
+                                AnyElement1 = subscribeRequest.Subscribe.AnyElement,
+                                AnyAttribute1 = subscribeRequest.Subscribe.AnyAttribute,
+
+                                SubscriptionManager = res.SubscribeResponse.SubscriptionManager,
+                                Expires2 = res.SubscribeResponse.Expires,
+                                AnyElement2 = res.SubscribeResponse.AnyElement,
+                                AnyAttribute2 = res.SubscribeResponse.AnyAttribute
+                            };
+            subscribeOp.Origins = [subscribeRequest as any message, res as any message];
+            subscribeRequest = null;
+            dispatch (endpoint EventSourceServer over node) accepts subscribeOp;
+        }
+    }
+    
+    // SubscriptionEnd, single message in this operation.
+    process node issues end:EventSourceMessageContract.SubscriptionEndResponse
+    {
+        var endOp = new EventSource.SubscriptionEndOp
+            {
+                SubscriptionManager = end.SubscriptionEnd.SubscriptionManager,
+                Status = end.SubscriptionEnd.Status,
+                Reason = end.SubscriptionEnd.Reason,
+                AnyElement = end.SubscriptionEnd.AnyElement,
+                AnyAttribute = end.SubscriptionEnd.AnyAttribute
+            };
+        dispatch (endpoint EventSourceServer over node) accepts endOp;
+    }
+} 
+
+// Actor: SubscriptionManagerActor
+// Description: This actor listen to WS(endpoint) defined in WebService.opn can process messages if match successfully. 
+autostart actor SubscriptionManagerActor( SubscriptionManagerIntermidiateEndpoint node)
+{
+    
+    SubscriptionManagerMessageContract.RenewRequest renewRequest = null;
+    SubscriptionManagerMessageContract.GetStatusRequest getStatusRequest = null;
+    SubscriptionManagerMessageContract.UnsubscribeRequest unsubscribeRequest = null;
+    // Renew request
+    process node accepts req:SubscriptionManagerMessageContract.RenewRequest
+    {
+        if (renewRequest == null)
+        {
+            renewRequest = req;
+        }
+        else
+        {
+            ValidationCheck(false, renewRequest, "WSEventing: Incomplete Renew operation due to missing response.");
+            DisplayTopLevelMessage(renewRequest);
+            renewRequest = req;
+        }
+    } 
+    
+    // Renew response
+    process node issues res:SubscriptionManagerMessageContract.RenewResponse
+    {
+        if (renewRequest == null)
+        {
+            ValidationCheck(false, res, "WSEventing: Incomplete Renew operation due to missing response.");
+        }
+        else
+        {
+            var renewOp = new SubscriptionManager.RenewOp
+                            {
+                               Expires1 = renewRequest.Renew.Expires,
+                               AnyElement1 = renewRequest.Renew.AnyElement,
+                               AnyAttribute1 = renewRequest.Renew.AnyAttribute,
+                               
+                               Expires2 = res.RenewResponse.Expires,
+                               AnyElement2 = res.RenewResponse.AnyElement,
+                               AnyAttribute2 = res.RenewResponse.AnyAttribute
+                            };
+            renewOp.Origins = [renewRequest as any message, res as any message];
+            renewRequest = null;
+            dispatch (endpoint SubscriptionManagerServer over node) accepts renewOp;
+        }
+    }
+    
+    // GetStatus request
+    process node accepts req:SubscriptionManagerMessageContract.GetStatusRequest
+    {
+        if (getStatusRequest == null)
+        {
+            getStatusRequest = req;
+        }
+        else
+        {
+            ValidationCheck(false, getStatusRequest, "WSEventing: Incomplete GetStatus operation due to missing response.");
+            DisplayTopLevelMessage(getStatusRequest);
+            getStatusRequest = req;
+        }
+    } 
+    
+    // GetStatus response
+    process node issues res:SubscriptionManagerMessageContract.GetStatusResponse
+    {
+        if (getStatusRequest == null)
+        {
+            ValidationCheck(false, res, "WSEventing: Incomplete GetStatus operation due to missing response.");
+        }
+        else
+        {
+            var getStatusOp = new SubscriptionManager.GetStatusOp
+                            {
+                                    AnyElement1 = getStatusRequest.GetStatus.AnyElement,
+                                    AnyAttribute1 = getStatusRequest.GetStatus.AnyAttribute,
+                                    
+                                    Expires = res.GetStatusResponse.Expires,
+                                    AnyElement2 = res.GetStatusResponse.AnyElement,
+                                    AnyAttribute2 = res.GetStatusResponse.AnyAttribute
+                            };
+                            //contract SubscriptionManager
+            getStatusOp.Origins = [getStatusRequest as any message, res as any message];
+            getStatusRequest = null;
+            dispatch (endpoint SubscriptionManagerServer over node) accepts getStatusOp;
+        }
+    }
+    
+    // Unsubscribe request
+    process node accepts req:SubscriptionManagerMessageContract.UnsubscribeRequest
+    {
+        if (unsubscribeRequest == null)
+        {
+            unsubscribeRequest = req;
+        }
+        else
+        {
+            ValidationCheck(false, unsubscribeRequest, "WSEventing: Incomplete Unsubscribe operation due to missing response.");
+            DisplayTopLevelMessage(unsubscribeRequest);
+            unsubscribeRequest = req;
+        }
+    }
+    
+    // Unsubscribe response
+    process node issues res:SubscriptionManagerMessageContract.UnsubscribeResponse
+    {
+        // The response message is empty.
+        if (unsubscribeRequest == null)
+        {
+            ValidationCheck(false, res, "WSEventing: Incomplete Unsubscribe operation due to missing response.");
+        }
+        else
+        {
+
+            var unsubscribeOp = new SubscriptionManager.UnsubscribeOp
+                            {
+                                AnyElement = unsubscribeRequest.Unsubscribe.AnyElement,
+                                AnyAttribute = unsubscribeRequest.Unsubscribe.AnyAttribute
+                            };
+                            //contract SubscriptionManager
+            unsubscribeOp.Origins = [unsubscribeRequest as any message, res as any message];
+            unsubscribeRequest = null;
+            dispatch (endpoint SubscriptionManagerServer over node) accepts unsubscribeOp;
+        }
+    }
+}
+    
+// Contract: EventSource
+// Description: 
+contract EventSource
+    with XmlEncodingDefaults{Namespace = ""}
+{
+    accepts operation SubscribeOp
+    {
+        in optional EndpointReferenceType EndTo with XmlEncoding{Name = "EndTo"};
+        in DeliveryType Delivery with XmlEncoding{Name = "Delivery"};
+        in optional ExpirationType Expires1 with XmlEncoding{Name = "Expires"};
+        in optional FilterType Filter with XmlEncoding{Name = "Filter"};
+        in optional array<xml> AnyElement1 with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+        in optional array<xml> AnyAttribute1 with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+
+        out EndpointReferenceType SubscriptionManager with XmlEncoding{Kind = XmlKind.Element};
+        out ExpirationType Expires2 with XmlEncoding{Name = "Expires"};
+        out optional array<xml> AnyElement2 with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+        out optional array<xml> AnyAttribute2 with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+        
+        override string ToString()
+        {
+            return "SubscribeOp" + this.ExtendingSummary;
+        }
+    } with SoapMessageInfo {
+                Action = WSEventingSubscribeAction,
+                ReplyAction = WSEventingSubscribeResponseAction};
+           
+    accepts operation SubscriptionEndOp
+    {
+        out EndpointReferenceType SubscriptionManager with XmlEncoding{Name = "SubscriptionManager"};
+        out OpenSubscriptionEndCodeType Status with XmlEncoding{Name = "Status"};
+        out optional array<LanguageSpecificStringType> Reason with XmlEncoding{Name = "Reason", Kind = XmlKind.Element};
+        out optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+        out optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+        
+        override string ToString()
+        {
+            return "SubscriptionEndOp" + this.ExtendingSummary;
+        }
+    }  with SoapMessageInfo {
+                ReplyAction = WSEventingSubsriptionEndAction};
+}
+
+// Contract: SubscriptionManager
+// Description: 
+contract SubscriptionManager
+    with XmlEncodingDefaults{Namespace = ""}
+{
+    accepts operation RenewOp
+    {
+        in optional ExpirationType Expires1 with XmlEncoding{Name = "Expires"};
+        in optional array<xml> AnyElement1 with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+        in optional array<xml> AnyAttribute1 with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+        
+        out optional ExpirationType Expires2 with XmlEncoding{Name = "Expires"};
+        out optional array<xml> AnyElement2 with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+        out optional array<xml> AnyAttribute2 with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+        
+        override string ToString()
+        {
+            return "RenewOp" + this.ExtendingSummary;
+        }
+    }  with SoapMessageInfo {
+                Action = WSEventingRenewAction,
+                ReplyAction = WSEventingRenewResponseAction};
+                
+    accepts operation GetStatusOp
+    {
+        in optional array<xml> AnyElement1 with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+        in optional array<xml> AnyAttribute1 with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+        
+        out optional ExpirationType Expires with XmlEncoding{Name = "Expires"};
+        out optional array<xml> AnyElement2 with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+        out optional array<xml> AnyAttribute2 with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+        
+        override string ToString()
+        {
+            return "GetStatusOp" + this.ExtendingSummary;
+        }
+    } with SoapMessageInfo {
+                Action = WSEventingGetStatusAction,
+                ReplyAction = WSEventingGetStatusResponseAction};
+                
+    accepts operation UnsubscribeOp
+    {
+        in optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+        in optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+        
+        override string ToString()
+        {
+            return "UnsubscribeOp" + this.ExtendingSummary;
+        }
+    } with SoapMessageInfo {
+                Action = WSEventingUnsubscribeAction,
+                ReplyAction = WSEventingUnsubscribeResponseAction};
+}
+
+// Intermidiate layer
+endpoint EventSourceIntermidiateEndpoint 
+    over SOAP.Server 
+    provides EventSourceMessageContract;
+    
+endpoint SubscriptionManagerIntermidiateEndpoint 
+    over SOAP.Server 
+    provides SubscriptionManagerMessageContract;
+
+autostart actor EventSourceIntermidiateActor (SOAP.Server node)  precedes SOAP.Server
+{
+    // Subscribe request;
+    process node accepts soap:SOAP.SoapMessage where soap.Action == WSEventingSubscribeAction
+    {
+        switch (soap.Body)
+        {
+            case m:EventSourceMessageContract.SubscribeRequest from XmlDecoder<EventSourceMessageContract.SubscribeRequest > =>
+                dispatch (endpoint EventSourceIntermidiateEndpoint over node) accepts m; // Hold the request untill response is processed.
+            default =>
+                ThrowDecodingException("WSEventing", "SubscribeRequest");
+        }    
+    } 
+    
+    // Subscribe response
+    process node issues soap:SOAP.SoapMessage where soap.Action == WSEventingSubscribeResponseAction
+    {
+        switch (soap.Body)
+        {
+            case response:EventSourceMessageContract.SubscribeResponse from XmlDecoder<EventSourceMessageContract.SubscribeResponse> =>
+                dispatch (endpoint EventSourceIntermidiateEndpoint over node) issues response;      
+            default =>
+                ThrowDecodingException("WSEventing", "SubscribeResponse");
+        }    
+    }
+    
+    // SubscriptionEnd, single message in this operation.
+    process node issues soap:SOAP.SoapMessage where soap.Action == WSEventingSubsriptionEndAction
+    {
+        switch (soap.Body)
+        {
+            case m:EventSourceMessageContract.SubscriptionEndResponse from XmlDecoder<EventSourceMessageContract.SubscriptionEndResponse> =>
+                dispatch (endpoint EventSourceIntermidiateEndpoint over node) issues m; 
+            default =>
+                ThrowDecodingException("WSEventing", "SubscriptionEndResponse");
+        }
+    }
+}
+
+autostart actor SubscriptionManagerIntermidiateActor( SOAP.Server node)
+{
+    // Renew request
+    process node accepts soap:SOAP.SoapMessage where soap.Action == WSEventingRenewAction
+    {
+        switch (soap.Body)
+        {
+            case m:SubscriptionManagerMessageContract.RenewRequest from XmlDecoder<SubscriptionManagerMessageContract.RenewRequest> =>
+                dispatch (endpoint SubscriptionManagerIntermidiateEndpoint over node) accepts m; 
+            default =>
+                ThrowDecodingException("WSEventing", "RenewRequest");
+        }    
+    } 
+    
+    // Renew response
+    process node issues soap:SOAP.SoapMessage where soap.Action == WSEventingRenewResponseAction
+    {
+        switch (soap.Body)
+        {
+            case m:SubscriptionManagerMessageContract.RenewResponse from XmlDecoder<SubscriptionManagerMessageContract.RenewResponse> =>
+                dispatch (endpoint SubscriptionManagerIntermidiateEndpoint over node) issues m; 
+            default =>
+                ThrowDecodingException("WSEventing", "RenewResponse");
+        }    
+    }
+    
+    // GetStatus request
+    process node accepts soap:SOAP.SoapMessage where soap.Action == WSEventingGetStatusAction
+    {
+        switch (soap.Body)
+        {
+            case m:SubscriptionManagerMessageContract.GetStatusRequest from XmlDecoder<SubscriptionManagerMessageContract.GetStatusRequest> =>
+                dispatch (endpoint SubscriptionManagerIntermidiateEndpoint over node) accepts m; 
+            default =>
+                ThrowDecodingException("WSEventing", "GetStatusRequest");
+        }    
+    } 
+    
+    // GetStatus response
+    process node issues soap:SOAP.SoapMessage where soap.Action == WSEventingGetStatusResponseAction
+    {
+        switch (soap.Body)
+        {
+            case m:SubscriptionManagerMessageContract.GetStatusResponse from XmlDecoder<SubscriptionManagerMessageContract.GetStatusResponse> =>
+                dispatch (endpoint SubscriptionManagerIntermidiateEndpoint over node) issues m; 
+            default =>
+                ThrowDecodingException("WSEventing", "GetStatusResponse");
+        }    
+    }
+    
+    // Unsubscribe request
+    process node accepts soap:SOAP.SoapMessage where soap.Action == WSEventingUnsubscribeAction
+    {
+        switch (soap.Body)
+        {
+            case m:SubscriptionManagerMessageContract.UnsubscribeRequest from XmlDecoder<SubscriptionManagerMessageContract.UnsubscribeRequest> =>
+                dispatch (endpoint SubscriptionManagerIntermidiateEndpoint over node) accepts m; 
+            default =>
+                ThrowDecodingException("WSEventing", "UnsubscribeRequest");
+        }
+    }
+    
+    // Unsubscribe response
+    process node issues soap:SOAP.SoapMessage where soap.Action == WSEventingUnsubscribeResponseAction
+    {
+        SubscriptionManagerMessageContract.UnsubscribeResponse unsubscribeResponse = new SubscriptionManagerMessageContract.UnsubscribeResponse{};
+        dispatch (endpoint SubscriptionManagerIntermidiateEndpoint over node) issues unsubscribeResponse; 
+    }
+}
+
+// messae contract    
+contract SubscriptionManagerMessageContract
+    with XmlEncoding{Namespace = ""}
+{
+    accepts message RenewRequest
+    {
+        RenewType Renew with XmlEncoding{Namespace = WSEventingNamespace};
+        override string ToString()
+        {
+            return "RenewRequest" + this.ExtendingSummary 
+            + (this.Renew.Expires == nothing ? "" : ", Expires: " + (this.Renew.Expires as string));
+        }
+    }
+    issues message RenewResponse
+    {
+        RenewResponseType RenewResponse with XmlEncoding{Namespace = WSEventingNamespace};
+        override string ToString()
+        {
+            return "RenewResponse" + this.ExtendingSummary 
+            + (this.RenewResponse.Expires == nothing ? "" : ", Expires: " + (this.RenewResponse.Expires as string));
+        }
+    }
+    accepts message GetStatusRequest
+    {
+        GetStatusType GetStatus with XmlEncoding{Namespace = WSEventingNamespace};
+        override string ToString()
+        {
+            return "GetStatusRequest" + this.ExtendingSummary;
+        }     
+    }
+    issues message GetStatusResponse
+    {
+        GetStatusResponseType GetStatusResponse with XmlEncoding{Namespace = WSEventingNamespace};
+        override string ToString()
+        {
+            return "GetStatusResponse" + this.ExtendingSummary 
+            + (this.GetStatusResponse.Expires == nothing ? "" : ", Expires: " + (this.GetStatusResponse.Expires as string));
+        } 
+    }
+    accepts message UnsubscribeRequest
+    {
+        UnsubscribeType Unsubscribe with XmlEncoding{Namespace = WSEventingNamespace};
+        override string ToString()
+        {
+            return "UnsubscribeRequest" + this.ExtendingSummary;
+        } 
+    }
+    issues message UnsubscribeResponse
+    {
+        UnsubscribeResponseType UnsubscribeResponse with XmlEncoding{Namespace = WSEventingNamespace};
+        override string ToString()
+        {
+            return "UnsubscribeResponse" + this.ExtendingSummary;
+        }
+    }
+};
+
+contract EventSourceMessageContract
+    with XmlEncodingDefaults{Namespace = ""}
+{
+    accepts message SubscribeRequest
+    {
+        SubscribeType Subscribe with XmlEncoding{Namespace = WSEventingNamespace};
+        override string ToString()
+        {
+            return "SubscribeRequest" + this.ExtendingSummary
+            + (this.Subscribe.Expires == nothing ? "" : ", Expires: " + (this.Subscribe.Expires as string))
+            + (this.Subscribe.Filter == nothing ? "" : ", Filter: " + (this.Subscribe.Filter as string));
+        } 
+    }
+    issues message SubscribeResponse
+    {
+        SubscribeResponseType SubscribeResponse with XmlEncoding{Namespace = WSEventingNamespace};
+        override string ToString()
+        {
+            return "SubscribeResponse" + this.ExtendingSummary
+            + (this.SubscribeResponse.Expires == nothing ? "" : ", Expires: " + (this.SubscribeResponse.Expires as string));
+        } 
+    }
+    issues message SubscriptionEndResponse
+    {
+        SubscriptionEndType SubscriptionEnd with XmlEncoding{Namespace = WSEventingNamespace};
+        override string ToString()
+        {
+            return "SubscriptionEndResponse" + this.ExtendingSummary
+            + (this.SubscriptionEnd.Status == nothing ? "" : ", Status: " + (this.SubscriptionEnd.Status as string));
+        } 
+    }
+};
+
+// Types and golbal elements
+type DeliveryType
+{
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Any};
+    optional XSAnyURI Mode with XmlEncoding{Name = "Mode", Kind = XmlKind.Attribute};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Any};
+}
+
+pattern NotifyTo = EndpointReferenceType
+    with XmlEncoding{Name = "NotifyTo"};
+
+pattern NonNegativeDurationType = XSDuration
+    with XmlEncoding{Name = "NonNegativeDurationType"};
+    
+//pattern NonNegativeDurationType = string with
+    //XmlEncoding{Name = "PositiveDurationType" },
+    //XmlPrimitiveValueEncoding{DataType = XmlSchemaType.duration, MinInclusive = "P0Y0M0DT0H0M0S"};
+
+pattern ExpirationType = NonNegativeDurationType | XSDatatime 
+    with XmlEncoding{Name = "ExpirationType"};
+    
+type FilterType
+{
+    optional XSAnyURI Dialect with XmlEncoding{Name = "Dialect", Kind = XmlKind.Attribute};
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+type LanguageSpecificStringType
+{
+    string Base with XmlEncoding{Kind = XmlKind.Text};
+    XSLanguage Language with XmlEncoding{Kind = XmlKind.Attribute};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+}
+
+// Subscribe request
+pattern Subscribe = SubscribeType
+    with XmlEncoding{Name = "Subscribe"};
+
+type SubscribeType
+{
+    optional EndpointReferenceType EndTo with XmlEncoding{Name = "EndTo"};
+    DeliveryType Delivery with XmlEncoding{Name = "Delivery"};
+    optional ExpirationType Expires with XmlEncoding{Name = "Expires"};
+    optional FilterType Filter with XmlEncoding{Name = "Filter"};
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+} with XmlEncoding{AnonymousType = true};
+
+pattern Identifier = XSAnyURI   
+    with XmlEncoding{Name = "Identifier"};
+
+type SubscribeResponseType
+{
+    EndpointReferenceType SubscriptionManager with XmlEncoding{Kind = XmlKind.Element};
+    ExpirationType Expires with XmlEncoding{Name = "Expires"};
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+} with XmlEncoding{AnonymousType = true};
+    
+// Used in a fault if there's an unsupported dialect
+pattern SupportedDialect = XSAnyURI
+    with XmlEncoding{Name = "SupportedDialect"};
+
+// Used in a fault if there's an unsupported delivery mode
+pattern SupportedDeliveryMode = XSAnyURI
+    with XmlEncoding{Name = "SupportedDeliveryMode"};
+
+type RenewType
+{
+    optional ExpirationType Expires with XmlEncoding{Name = "Expires"};
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+} with XmlEncoding{AnonymousType = true};
+
+
+type RenewResponseType
+{
+    optional ExpirationType Expires with XmlEncoding{Name = "Expires"};
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+} with XmlEncoding{AnonymousType = true};
+
+type GetStatusType
+{
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+} with XmlEncoding{AnonymousType = true};
+
+// GetStatus response
+pattern GetStatusResponse = GetStatusResponseType
+    with XmlEncoding{Name = "GetStatusResponse"};
+
+type GetStatusResponseType
+{
+    optional ExpirationType Expires with XmlEncoding{Name = "Expires"};
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+} with XmlEncoding{AnonymousType = true};
+
+type UnsubscribeType
+{
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+} with XmlEncoding{AnonymousType = true};
+
+// count(/s:Envelope/s:Body/*) = 0 for Unsubscribe response 
+type UnsubscribeResponseType
+{
+    // Empty body
+}
+
+type SubscriptionEndType
+{
+    EndpointReferenceType SubscriptionManager with XmlEncoding{Name = "SubscriptionManager"};
+    OpenSubscriptionEndCodeType Status with XmlEncoding{Name = "Status"};
+    optional array<LanguageSpecificStringType> Reason with XmlEncoding{Name = "Reason", Kind = XmlKind.Element};
+    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+} with XmlEncoding{AnonymousType = true};
+
+pattern SubscriptionEndCodeType = enum XSAnyURI
+{
+    ENUMVALUE0 = "http://schemas.xmlsoap.org/ws/2004/08/eventing/DeliveryFailure",
+    ENUMVALUE1 = "http://schemas.xmlsoap.org/ws/2004/08/eventing/SourceShuttingDown",
+    ENUMVALUE2 = "http://schemas.xmlsoap.org/ws/2004/08/eventing/SourceCancelling",    
+};
+
+pattern OpenSubscriptionEndCodeType = SubscriptionEndCodeType | XSAnyURI;
+
+pattern Eventsource = XSBoolean with XmlEncoding{Name = "EventSource"};
+
+const string WSEventingNamespace = "http://schemas.xmlsoap.org/ws/2004/08/eventing";
+
+// Subscribe
+const string WSEventingSubscribeAction = WSEventingNamespace + "/Subscribe";
+const string WSEventingSubscribeResponseAction = WSEventingNamespace + "/SubscribeResponse";
+
+// SubscriptionEnd
+const string WSEventingSubsriptionEndAction = WSEventingNamespace + "/SubscriptionEnd";
+
+// Renew
+const string WSEventingRenewAction = WSEventingNamespace + "/Renew";
+const string WSEventingRenewResponseAction = WSEventingNamespace + "/RenewResponse";
+
+// GetStatus
+const string WSEventingGetStatusAction = WSEventingNamespace + "/GetStatus";
+const string WSEventingGetStatusResponseAction = WSEventingNamespace + "/GetStatusResponse";
+
+// Unsubscribe
+const string WSEventingUnsubscribeAction = WSEventingNamespace + "/Unsubscribe";
+const string WSEventingUnsubscribeResponseAction = WSEventingNamespace + "/UnsubscribeResponse";

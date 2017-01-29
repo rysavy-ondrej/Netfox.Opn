@@ -1,0 +1,118 @@
+// partial implemented
+module JWT with 
+JsonEncodingDefaults{},
+StreamEncodingDefaults{Encoding = TextEncoding.ASCII},
+Documentation
+{
+    ProtocolName = "JSON Web Token (JWT)",
+    ShortName = "JWT",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "JWT", Link = "http://tools.ietf.org/html/draft-ietf-oauth-json-web-token-08#section-5"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class=RevisionClass.Major, Version="360841", Date="03/24/2014"}
+        ]
+};
+
+using Utility;
+
+type JWTType
+{
+    JWTHeader Header;
+    JWTClaimsSet ClaimsSet;
+}
+
+type JWTHeader
+{
+    optional string typ;
+    optional string cty;
+};
+
+type JWTClaimsSet
+{
+    optional string iss;
+    optional string sub;
+    optional string aud;
+    optional string exp;
+    optional string nbf;
+    optional string iat;
+    optional string jti;
+    optional string typ;
+}
+
+// The encoding process of JWT is,
+// 1. Base64Url encode the octets of the UTF-8 representation of the JWT header
+// 2. Base64Url encode the octets of the UTF-8 representation of the ClaimsSet
+// 3. Sign the encoded JWT Header and JWT Claims Set and the Base64Url encode the signature.
+// 4. Concatenating these three parts in this order with period '.'.
+syntax Base64Char = regex{[^.]*};
+// Decoding first step: Get Base64Url encoded JWT header string and Base64Url encoded claims set string 
+syntax EncodedJWT = headerEncodedString:Base64Char "." claimsSetEncodedString: Base64Char "." Base64Char
+                     => ConvertToJWTType(headerEncodedString, claimsSetEncodedString);
+
+// Decoding second step: Base64URL decode JWT header and Claims Set 
+optional JWTType ConvertToJWTType(string headerEncodedString, string claimsSetEncodedString)
+{
+    // Base64Url decode JWT Header
+    var b = URLBase64StringToBinary(headerEncodedString);
+    if (b == nothing)
+    {
+        return nothing;
+    }
+
+    var h = JsonDecoder<JWTHeader>(b as binary);
+    if (h == nothing)
+    {
+        return nothing;
+    }
+
+    // Base64Url decode Claims Set
+    b = URLBase64StringToBinary(claimsSetEncodedString);
+    if (b == nothing)
+    {
+        return new JWTType
+        {
+            Header = h as JWTHeader
+        };  
+    }
+    var c = JsonDecoder<JWTClaimsSet>(b as binary);
+    if (c == nothing)
+    {
+        return new JWTType
+        {
+            Header = h as JWTHeader
+        }; 
+    }
+
+    return new JWTType
+    {
+        Header = h as JWTHeader,
+        ClaimsSet = c as JWTClaimsSet
+    };
+}
+
+// WORKAROUND for Base64URL, URL may have no padding for Base64 encoded string
+optional binary URLBase64StringToBinary(string str)
+{
+    if (str != null)
+    {
+        str = str.Replace("%2B", "+").Replace("%2F", "/").Replace("%2b", "+").Replace("%2f", "/").Replace("%3D", "=").Replace("%3d", "=");
+        int lastGroupLen = str.Count % 4;
+        if (lastGroupLen == 3)
+        {
+            str = str + "=";
+        }
+        else if (lastGroupLen == 2)
+        {
+            str = str + "==";
+        }
+    }
+    return Base64StringToBinary(str);
+}

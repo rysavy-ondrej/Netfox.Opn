@@ -1,0 +1,205 @@
+protocol OAPX with
+JsonEncodingDefaults{},
+Documentation
+{
+    ProtocolName = "OAuth 2.0 Protocol Extensions",
+    ShortName = "OAPX",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+    [
+        new Reference{Name = "MS-OAPX", Version = "4.0", Date = "08/19/2015", ProgramName = ProgramName.WSPP},
+    ],
+    RevisionSummary =
+    [
+        new Revision{Class = RevisionClass.Major, Version = "381536", Date = "09/29/2015"},
+    ]
+};
+
+using HTTP;
+using OAuth2;
+using Standard;
+
+endpoint AuthorizationServer 
+    over OAuth2.AuthorizationServer
+    accepts OAPXAuthorizationRequest;
+    
+autostart actor OAPXExtendingOAuth2(HTTP.Server server) precedes OAuth2.OAuth2OverHTTP
+{
+    // request
+    process server accepts httpReq:HttpContract.Request where IsOAuth2Request(httpReq)
+    {
+        // if the returned value is nothing, exception has already been thrown in decoder.
+        var oauth2 = DecodeOAuth2FromHttpRequest(httpReq);
+        if (oauth2 != nothing)
+        {
+            var oauth2Server = endpoint OAuth2.AuthorizationServer over server;
+            // Dispatch OAuth2 message to OAuth2 endpoint
+            OAuth2.MessageDispatcher(oauth2 as (AuthorizationRequest | AccessTokenRequest), oauth2Server);
+            
+            if (oauth2 is AuthorizationRequest)
+            {
+                OAPXAuthorizationRequest oapx;
+                if (TryDecodeOAPXAuthorizationRequest(httpReq, out oapx))
+                {
+                    // Set Auth2 message as origins of OAPX message, and then dispatch to OAPX endpoint
+                    oapx.Origins = [oauth2 as any message];
+                    dispatch (endpoint AuthorizationServer over oauth2Server) accepts oapx;
+                }
+            }
+        }
+        else
+        {
+            reject;
+        }
+    }
+    // response
+    process server issues httpRes:HttpContract.Response where IsOAuth2Response(httpRes)
+    {
+        // if the returned value is nothing, exception has already been thrown in decoder.
+        var oauth2 = OAuth2.DecodeOAuth2FromHttpResponse(httpRes);
+        if (oauth2 != nothing)
+        {
+            if (oauth2 is errRes:ErrorResponse)
+            {
+                ErrorCodeIf(true, errRes, errRes.$"error");
+            }
+            
+            var oauth2Server = endpoint OAuth2.AuthorizationServer over server;
+            // Dispatch OAuth2 message to OAuth2 endpoint
+            OAuth2.MessageDispatcher(oauth2 as (AuthorizationRequest | AuthorizationResponse | AccessTokenResponse | ErrorResponse), oauth2Server);
+            
+            if (oauth2 is AuthorizationRequest)
+            {
+                OAPXAuthorizationRequest oapx;
+                if (TryDecodeOAPXAuthorizationRequest(httpRes, out oapx))
+                {
+                    // Set Auth2 message as origins of OAPX message, and then dispatch to OAPX endpoint
+                    oapx.Origins = [oauth2 as any message];
+                    dispatch (endpoint AuthorizationServer over oauth2Server) accepts oapx;
+                }
+            }
+        }
+        else
+        {
+            reject;
+        }
+    }
+}
+
+// this message contains extension fields of OAPX
+message OAPXAuthorizationRequest
+{
+    /*in HTTP Uri query*/
+    // 2.2.2.1, REQUIRED
+    string resource;
+    // 2.2.2.2, OPTIONAL, base64 URL encoded JSON-formatted string
+    optional (resource_params | string) resource_params;
+    // 2.2.2.3, OPTIONAL, 
+    optional string ClientRequestId;
+    // 2.2.2.4, OPTIONAL
+    optional string login_hint;
+    optional string username;
+    // 2.2.2.5, OPTIONAL
+    optional string domain_hint;
+    // 2.2.2.6, OPTIONAL
+    optional string nonce;
+    // 2.2.2.7, OPTIONAL
+    optional string prompt;
+    // 2.2.2.8, OPTIONAL
+    optional string max_age;
+    // 2.2.2.9, OPTIONAL
+    optional string id_token_hint;
+    /* in HTTP header field */
+    optional string $"client-request-id";
+    
+    override string ToString()
+    {
+        return "AuthorizationRequest, resource: " + resource + 
+            (login_hint != nothing ? (", login_hint: " + login_hint.ToString()) : "") +
+            (username != nothing ? (", username: " + username.ToString()) : "");
+    }
+}
+
+type resource_params
+{
+    array<KeyValuePair> Properties;
+}
+
+type KeyValuePair
+{
+    string Key;
+    string Value;
+}
+
+const set<string> OXPXDefinedErrorCode = {"invalid_resource", "server_error"};
+
+bool TryDecodeOAPXAuthorizationRequest((HttpContract.Request | HttpContract.Response) http, out OAPXAuthorizationRequest oapx)
+{
+    oapx = new OAPXAuthorizationRequest{};
+    string originalUriQuery = "";
+    map<string, string> paras = {};
+    // HTTP request
+    if (http is httpReq:HttpContract.Request)
+    {
+        oapx.$"client-request-id" = httpReq.Headers.Keys["client-request-id"] ? httpReq.Headers["client-request-id"].ToString() : nothing;
+        if (httpReq.Method == "GET")
+        {
+            if (httpReq.Uri.Query is query:map<string, string>)
+            {
+                paras = query;
+            }
+        }
+        else if (httpReq.Method == "POST" && (QueryParameters(ASCIIText(httpReq.Payload) as string) is o:map<string, string>))
+        {
+            paras = o;
+        }
+    }
+    // HTTP redirect response(302)
+    else if (http is httpRes:HttpContract.Response)
+    {
+        oapx.$"client-request-id" = httpRes.Headers.Keys["client-request-id"] ? httpRes.Headers["client-request-id"].ToString() : nothing;
+        if (("Location" in httpRes.Headers) && (httpRes.Headers["Location"] is uri:UriType))
+        {
+            if (uri.Query is query:map<string, string>)
+            {
+                paras = query;
+            }
+        }
+    }
+    if (paras.Count > 0 && paras.Keys["resource"])
+    {
+        paras = ParsePercentEncodedQuery(paras);
+        oapx = new OAPXAuthorizationRequest{};
+        // required filed
+        oapx.resource = paras["resource"].ToString();
+        // optional field
+        if (paras.Keys["resource_params"])
+        {
+            if (Base64StringToBinary(paras["resource_params"].ToString()) is bin:binary && JsonDecoder<resource_params>(bin) is v:resource_params)
+            {
+                oapx.resource_params = v;
+            }
+            else
+            {
+                oapx.resource_params = paras["resource_params"].ToString();
+            }
+        }
+        oapx.ClientRequestId = paras.Keys["ClientRequestId"] ? paras["ClientRequestId"].ToString() : nothing;
+        oapx.login_hint = paras.Keys["login_hint"] ? paras["login_hint"].ToString() : nothing;
+        oapx.username = paras.Keys["username"] ? paras["username"].ToString() : nothing;
+        oapx.domain_hint = paras.Keys["domain_hint"] ? paras["domain_hint"].ToString() : nothing;
+        oapx.nonce = paras.Keys["nonce"] ? paras["nonce"].ToString() : nothing;
+        oapx.prompt = paras.Keys["prompt"] ? paras["prompt"].ToString() : nothing;
+        oapx.max_age = paras.Keys["max_age"] ? paras["max_age"].ToString() : nothing;
+        oapx.id_token_hint = paras.Keys["id_token_hint"] ? paras["id_token_hint"].ToString() : nothing;
+        return true;
+    }
+    else
+    {
+        return false;
+    }
+}

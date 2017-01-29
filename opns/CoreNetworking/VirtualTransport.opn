@@ -1,0 +1,101 @@
+protocol VirtualTransport with
+Documentation
+{
+    ProtocolName = "Virtual Transport Layer for protocols over TCP",
+    ShortName = "VirtualTransport",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/06/2012"}
+        ]
+};
+
+using Standard;
+using Utility;
+
+
+/* The Server endpoint is the viewpoint for upper level protocols that may run over TCP.
+ * It abstracts TCP fragmentation, which is performed by ServerStateMachine, as specified below.
+ * The message type that represents a TCP message is the Segment.
+ * Other endpoint can register events which can be fired by Server endpoint when connection is closed
+ */
+endpoint Server[binary LocalAddress, binary RemoteAddress, ushort LocalPort, ushort RemotePort]
+    issues VirtualDataSegment accepts VirtualDataSegment
+{
+    // specifies whether 3-way handshake is missing
+    bool isMissingThreeWayHandshake = true;
+
+    Event eventsOnConnClose;
+
+    void RegisterEventOnConnClose(Event e)
+    {
+        eventsOnConnClose += e;
+    }
+
+    void OnConnClose()
+    {
+        if (eventsOnConnClose == null)
+            return;
+        eventsOnConnClose.Invoke();
+    }
+}
+
+// This is the virtualized data segment for upper layer's data access
+message VirtualDataSegment
+{
+    ushort SourcePort with Visualization {AliasName = "Port"};
+    ushort DestinationPort with Visualization {AliasName = "Port"};
+    uint SequenceNumber;
+    uint NextSequenceNumber;
+    binary Payload with MimeDescription{Format = "text/plain"};
+
+    override string ToString()
+    {
+        string summary = this#UnderlyingProtocol == nothing ? "" : this#UnderlyingProtocol.ToString() + " ";
+        summary += "Virtual Data Segment, Port: " + SourcePort.ToString() + " - " + DestinationPort.ToString();
+        if (Payload != null)
+        {
+            summary += ", Len: " + (Payload.Count as string);
+        }
+        summary += ", Seq Range: " + SequenceNumber.ToString() + " - " + NextSequenceNumber.ToString();
+        return summary;
+    }
+}
+
+annotation string VirtualDataSegment#UnderlyingProtocol;
+
+annotation bool VirtualDataSegment#IsIncomplete;
+annotation bool VirtualDataSegment#SegmentLost;
+
+string get Transport(this VirtualDataSegment segment)
+{
+    return "TCP: " + (segment.SourcePort > segment.DestinationPort
+        ? (segment.DestinationPort as string) + " - " + (segment.SourcePort as string)
+        : (segment.SourcePort as string) + " - " + (segment.DestinationPort as string));
+}
+
+string get TCPDiagnosis(this VirtualDataSegment m)
+{
+    string diagnosis = "";
+    if (m#IsIncomplete != nothing && m#IsIncomplete as bool)
+    {
+        diagnosis = "Incomplete ";
+    }
+    if (m#SegmentLost != nothing && m#SegmentLost as bool)
+    {
+        diagnosis += "Segment-Lost ";
+    }
+    return diagnosis.Trim();
+}
+
+uint get PayloadLength(this VirtualDataSegment m)
+{
+    return m.Payload.Count as uint;
+}

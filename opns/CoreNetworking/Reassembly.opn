@@ -1,0 +1,140 @@
+module Reassembly with
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+        ],
+    RevisionSummary = 
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+        ]
+};
+
+using Standard;
+using VirtualTransport;
+using Utility;
+
+bool IsFragmentsSequentialCompleted<T>(
+        array<T> fragments, // fragments
+        bool(T) isFirst, // function to identify the first fragment
+        bool(T) isLast, // function to identify the last fragment
+        int(T) sequence, // function to get the sequence token of current fragment
+        int(T) nextSequence) // function to get the expected next sequence token
+{
+    if (!isFirst(fragments[0]))
+    {
+        return false;
+    }
+    if (!isLast(fragments[fragments.Count()-1]))
+    {
+        return false;
+    }
+
+    var currSeq = sequence(fragments[0]);
+
+    foreach (var frag in fragments)
+    {
+        if (currSeq != sequence(frag))
+        {
+             return false;
+        }
+        currSeq = nextSequence(frag);
+    }
+    return true;
+}
+
+// Holder to cache buffer to reassebly TCP-based protocol.
+// Methods could be overridden for concrete reassembly logic.
+type DecodingCacheBase
+{
+    binary Buffer = $[];
+    bool HasIncompleteSegments = false;
+    bool HasSegmentLost = false;
+    array<any message> Origins = [];
+
+    /*
+     * Accumulate decoding buffer, and origins. 
+     * Store TCP diagnosis status.
+     */
+    virtual void Add(VirtualDataSegment seg)
+    {
+        // If detect TCP segment-lost, clare cache first.
+        if (seg#SegmentLost != nothing && seg#SegmentLost as bool)
+        {
+            Clear();
+        }
+        Buffer += seg.Payload;
+        Origins += [seg];
+        HasIncompleteSegments = seg#IsIncomplete != nothing && seg#IsIncomplete as bool;
+        HasSegmentLost = seg#SegmentLost != nothing && seg#SegmentLost as bool;
+    }
+    
+    /*
+     * Reset the cache.
+     * Invoked when concreate message decodes successfuly.
+     */
+    virtual void Reset(stream s)
+    {
+        if (s == null || s.BytePosition == s.ByteLength)
+        {
+            Buffer = $[];
+            Origins = [];
+        }
+        else
+        {
+            Buffer = s.PeekBytes(s.BitPosition);
+            // If any data left in Buffer, keep last Origins.
+            if (Origins.Count == 0)
+            {
+                ValidationCheck(false, null, DiagnosisLevel.Warning, 
+                    "Origins in DecodingCacheBase should not be empty, because there are bytes left in stream when Reset.");
+                return;
+            }
+            Origins = [Origins[Origins.Count - 1]];
+        }
+    }
+    
+    /*
+     * Try to decode partial message and clear the cache.
+     * Invoked when TCP segment-lost dedected or in endpoint destructor.
+     * Note: Exception MUST NOT be thrown in the function, 
+     * or real clearing job won't be done, following parsing will be broken.
+     */
+    virtual void Clear()
+    {
+        if (Buffer != null && Buffer.Count > 0)
+        {
+            // Try decode partial message.
+            var m = DecodePartialMessage();
+            if (m != nothing)
+            {
+                any message msg = m as any message;
+                msg.Origins = Origins;
+                Origins = [];
+                Buffer = $[];
+                DisplayTopLevelMessage(msg);
+                return;
+            }
+        }
+        Buffer = $[];
+        if (Origins != null && Origins.Count > 0)
+        {
+            foreach (var msg in Origins)
+            {
+                DisplayTopLevelMessage(msg);
+            }
+            Origins = [];
+        }
+    }
+    
+    /*
+     * Virutal method to try to partial message, concrete protocol NEEDs to override it.
+     * If partial message decodes failed, return nothing.
+     * Note: Exception can not thrown in the function, or following cleaning job will interrupted.
+     */
+    virtual optional any message DecodePartialMessage()
+    {
+        return nothing;
+    }
+}
